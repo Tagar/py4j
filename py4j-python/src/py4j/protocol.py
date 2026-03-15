@@ -16,16 +16,9 @@ Created on Oct 14, 2010
 
 :author: Barthelemy Dagenais
 """
-from __future__ import unicode_literals, absolute_import
-
 from base64 import standard_b64encode, standard_b64decode
 
 from decimal import Decimal
-
-from py4j.compat import (
-    long, basestring, unicode, bytearray2,
-    bytestr, isbytestr, isbytearray, ispython3bytestr,
-    bytetoint, bytetostr, strtobyte)
 
 
 JAVA_MAX_INT = 2147483647
@@ -159,7 +152,7 @@ DIR_JVMVIEW_SUBCOMMAND_NAME = "v\n"
 OUTPUT_CONVERTER = {
     NULL_TYPE: (lambda x, y: None),
     BOOLEAN_TYPE: (lambda value, y: value.lower() == "true"),
-    LONG_TYPE: (lambda value, y: long(value)),
+    LONG_TYPE: (lambda value, y: int(value)),
     DECIMAL_TYPE: (lambda value, y: Decimal(value)),
     INTEGER_TYPE: (lambda value, y: int(value)),
     BYTES_TYPE: (lambda value, y: decode_bytearray(value)),
@@ -185,7 +178,7 @@ def escape_new_line(original):
     :rtype: an escaped string
     """
     if original:
-        return smart_decode(original).replace("\\", "\\\\").\
+        return original.replace("\\", "\\\\").\
             replace("\r", "\\r").replace("\n", "\\n")
     else:
         return original
@@ -213,17 +206,16 @@ def unescape_new_line(escaped):
 
 
 def smart_decode(s):
-    if isinstance(s, unicode):
+    if isinstance(s, str):
         return s
-    elif isinstance(s, bytestr):
-        # Should never reach this case in Python 3
-        return unicode(s, "utf-8")
+    elif isinstance(s, bytes):
+        return s.decode("utf-8")
     else:
-        return unicode(s)
+        return str(s)
 
 
 def encode_float(float_value):
-    float_str = smart_decode(repr(float_value))
+    float_str = str(float_value)
     if float_str == "-inf":
         float_str = JAVA_NEGATIVE_INFINITY
     elif float_str == "inf":
@@ -234,16 +226,14 @@ def encode_float(float_value):
 
 
 def encode_bytearray(barray):
-    if isbytestr(barray):
-        return bytetostr(standard_b64encode(barray))
+    if isinstance(barray, bytes):
+        return standard_b64encode(barray).decode("ascii")
     else:
-        newbytestr = bytestr(barray)
-        return bytetostr(standard_b64encode(newbytestr))
+        return standard_b64encode(bytes(barray)).decode("ascii")
 
 
 def decode_bytearray(encoded):
-    new_bytes = strtobyte(encoded)
-    return bytearray2([bytetoint(b) for b in standard_b64decode(new_bytes)])
+    return bytearray(standard_b64decode(encoded.encode("ascii")))
 
 
 def is_python_proxy(parameter):
@@ -275,21 +265,21 @@ def get_command_part(parameter, python_proxy_pool=None):
     if parameter is None:
         command_part = NULL_TYPE
     elif isinstance(parameter, bool):
-        command_part = BOOLEAN_TYPE + smart_decode(parameter)
+        command_part = BOOLEAN_TYPE + str(parameter)
     elif isinstance(parameter, Decimal):
-        command_part = DECIMAL_TYPE + smart_decode(parameter)
+        command_part = DECIMAL_TYPE + str(parameter)
     elif isinstance(parameter, int) and parameter <= JAVA_MAX_INT\
             and parameter >= JAVA_MIN_INT:
-        command_part = INTEGER_TYPE + smart_decode(parameter)
-    elif isinstance(parameter, long) or isinstance(parameter, int):
-        command_part = LONG_TYPE + smart_decode(parameter)
+        command_part = INTEGER_TYPE + str(parameter)
+    elif isinstance(parameter, int):
+        command_part = LONG_TYPE + str(parameter)
     elif isinstance(parameter, float):
         command_part = DOUBLE_TYPE + encode_float(parameter)
-    elif isbytearray(parameter):
+    elif isinstance(parameter, bytearray):
         command_part = BYTES_TYPE + encode_bytearray(parameter)
-    elif ispython3bytestr(parameter):
+    elif isinstance(parameter, bytes):
         command_part = BYTES_TYPE + encode_bytearray(parameter)
-    elif isinstance(parameter, basestring):
+    elif isinstance(parameter, str):
         command_part = STRING_TYPE + escape_new_line(parameter)
     elif is_python_proxy(parameter):
         command_part = PYTHON_PROXY_TYPE + python_proxy_pool.put(parameter)

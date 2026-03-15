@@ -7,8 +7,6 @@ The signals pattern is very similar to the listener/observer pattern.
 from inspect import ismethod
 from threading import Lock
 
-from py4j.compat import range
-
 
 def make_id(func):
     if ismethod(func):

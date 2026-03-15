@@ -10,12 +10,12 @@ Created on Dec 3, 2009
 
 :author: Barthelemy Dagenais
 """
-from __future__ import unicode_literals, absolute_import
-
 from collections import deque
+import inspect
 import logging
 import os
 from pydoc import pager
+from queue import Queue
 import select
 import socket
 import struct
@@ -26,15 +26,14 @@ import traceback
 from threading import Thread, RLock
 import weakref
 
-from py4j.compat import (
-    range, hasattr2, basestring, CompatThread, Queue)
+from py4j.compat import hasattr2
 from py4j.finalizer import ThreadSafeFinalizer
 from py4j import protocol as proto
 from py4j.protocol import (
     Py4JError, Py4JJavaError, Py4JNetworkError,
     Py4JAuthenticationError,
     get_command_part, get_return_value,
-    register_output_converter, smart_decode, escape_new_line,
+    register_output_converter, escape_new_line,
     is_fatal_error, is_error, unescape_new_line,
     get_error_message, compute_exception_message)
 from py4j.signals import Signal
@@ -451,7 +450,7 @@ def is_instance_of(gateway, java_object, java_class):
     :param java_class: can be a string (fully qualified name), a JavaClass
             instance, or a JavaObject instance)
     """
-    if isinstance(java_class, basestring):
+    if isinstance(java_class, str):
         param = java_class
     elif isinstance(java_class, JavaClass):
         param = java_class._fqn
@@ -613,7 +612,7 @@ def do_client_auth(command, input_stream, sock, auth_token):
             raise Py4JAuthenticationError("Expected {}, received {}.".format(
                 proto.AUTH_COMMAND_NAME, command))
 
-        client_token = smart_decode(input_stream.readline()[:-1])
+        client_token = input_stream.readline()[:-1].decode("utf-8")
         # Remove the END marker
         input_stream.readline()
         if auth_token == client_token:
@@ -644,8 +643,8 @@ def _garbage_collect_object(gateway_client, target_id):
     try:
         try:
             ThreadSafeFinalizer.remove_finalizer(
-                smart_decode(gateway_client.address) +
-                smart_decode(gateway_client.port) +
+                str(gateway_client.address) +
+                str(gateway_client.port) +
                 target_id)
             gateway_client.garbage_collect_object(target_id)
         except Exception:
@@ -694,7 +693,7 @@ def _garbage_collect_proxy(pool, proxy_id):
     return success
 
 
-class OutputConsumer(CompatThread):
+class OutputConsumer(Thread):
     """Thread that consumes output
     """
 
@@ -722,10 +721,10 @@ class OutputConsumer(CompatThread):
     def run(self):
         lines_iterator = iter(self.stream.readline, b"")
         for line in lines_iterator:
-            self.redirect_func(smart_decode(line))
+            self.redirect_func(line.decode("utf-8"))
 
 
-class ProcessConsumer(CompatThread):
+class ProcessConsumer(Thread):
     """Thread that ensures process stdout and stderr are properly closed.
     """
 
@@ -1252,7 +1251,7 @@ class GatewayConnection(object):
                 "Error while sending", e, proto.ERROR_ON_SEND)
 
         try:
-            answer = smart_decode(self.stream.readline()[:-1])
+            answer = self.stream.readline()[:-1].decode("utf-8")
             logger.debug("Answer received: {0}".format(answer))
             if answer.startswith(proto.RETURN_MESSAGE):
                 answer = answer[1:]
@@ -1389,8 +1388,8 @@ class JavaObject(object):
         self._fully_populated = False
         self._gateway_doc = None
 
-        key = smart_decode(self._gateway_client.address) +\
-            smart_decode(self._gateway_client.port) +\
+        key = str(self._gateway_client.address) +\
+            str(self._gateway_client.port) +\
             self._target_id
 
         if self._gateway_client.gateway_property.enable_memory_management:
@@ -2314,7 +2313,7 @@ class CallbackServer(object):
             self.server_socket.listen(5)
             logger.info(
                 "Socket listening on {0}".
-                format(smart_decode(self.server_socket.getsockname())))
+                format(str(self.server_socket.getsockname())))
             server_started.send(
                 self, server=self)
 
@@ -2436,7 +2435,7 @@ class CallbackConnection(Thread):
         authenticated = self.callback_server_parameters.auth_token is None
         try:
             while True:
-                command = smart_decode(self.input.readline())[:-1]
+                command = self.input.readline()[:-1].decode("utf-8")
                 if not authenticated:
                     token = self.callback_server_parameters.auth_token
                     # Will raise an exception if auth fails in any way.
@@ -2444,7 +2443,7 @@ class CallbackConnection(Thread):
                         command, self.input, self.socket, token)
                     continue
 
-                obj_id = smart_decode(self.input.readline())[:-1]
+                obj_id = self.input.readline()[:-1].decode("utf-8")
                 logger.info(
                     "Received command {0} on object id {1}".
                     format(command, obj_id))
@@ -2501,7 +2500,7 @@ class CallbackConnection(Thread):
                 get_command_part('Object ID unknown', self.pool)
 
         try:
-            method = smart_decode(input.readline())[:-1]
+            method = input.readline()[:-1].decode("utf-8")
             params = self._get_params(input)
             return_value = getattr(self.pool[obj_id], method)(*params)
             return proto.RETURN_MESSAGE + proto.SUCCESS +\
@@ -2520,11 +2519,11 @@ class CallbackConnection(Thread):
 
     def _get_params(self, input):
         params = []
-        temp = smart_decode(input.readline())[:-1]
+        temp = input.readline()[:-1].decode("utf-8")
         while temp != proto.END:
             param = get_return_value("y" + temp, self.gateway_client)
             params.append(param)
-            temp = smart_decode(input.readline())[:-1]
+            temp = input.readline()[:-1].decode("utf-8")
         return params
 
 
@@ -2557,7 +2556,7 @@ class PythonProxyPool(object):
             if force_id:
                 id = force_id
             else:
-                id = proto.PYTHON_PROXY_PREFIX + smart_decode(self.next_id)
+                id = proto.PYTHON_PROXY_PREFIX + str(self.next_id)
                 self.next_id += 1
             self.dict[id] = object
         return id

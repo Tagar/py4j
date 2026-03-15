@@ -8,26 +8,12 @@ Created on Jan 22, 2010
 
 :author: Barthelemy Dagenais
 """
-from __future__ import unicode_literals, absolute_import
-
-# As of Python 3.3, the abstract base classes in the collections module have
-# been moved to collections.abc.
-# (see https://docs.python.org/3.3/library/collections.abc.html)
-try:
-    # Python >=3.3
-    from collections.abc import (
-        MutableMapping, Sequence, MutableSequence,
-        MutableSet, Set)
-except ImportError:
-    # Python <=3.2
-    from collections import (
-        MutableMapping, Sequence, MutableSequence,
-        MutableSet, Set)
+from collections.abc import (
+    MutableMapping, Sequence, MutableSequence,
+    MutableSet, Set)
 import sys
 
-from py4j.compat import (
-    iteritems, next, hasattr2, isbytearray,
-    ispython3bytestr, basestring)
+from py4j.compat import hasattr2
 from py4j.java_gateway import JavaObject, JavaMember, get_method, JavaClass
 from py4j import protocol as proto
 from py4j.protocol import (
@@ -105,7 +91,7 @@ class JavaMap(JavaObject, MutableMapping):
     def __repr__(self):
         items = (
             "{0}: {1}".format(repr(k), repr(v))
-            for k, v in iteritems(self))
+            for k, v in self.items())
         return "{{{0}}}".format(", ".join(items))
 
 
@@ -507,8 +493,9 @@ class ListConverter(object):
     def can_convert(self, object):
         # Check for iterator protocol and should not be an instance of byte
         # array (taken care of by protocol)
-        return hasattr2(object, "__iter__") and not isbytearray(object) and\
-            not ispython3bytestr(object) and not isinstance(object, basestring)
+        return hasattr2(object, "__iter__") and \
+            not isinstance(object, bytearray) and \
+            not isinstance(object, bytes) and not isinstance(object, str)
 
     def convert(self, object, gateway_client):
         ArrayList = JavaClass("java.util.ArrayList", gateway_client)
