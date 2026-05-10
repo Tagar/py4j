@@ -686,7 +686,17 @@ public class GatewayServer extends DefaultGatewayServerListener implements Py4JJ
 				processSocket(socket);
 			}
 		} catch (Exception e) {
-			fireServerError(e);
+			// The SocketException raised when sSocket.close() unblocks accept()
+			// during a normal shutdown is not a real error - it's the expected
+			// signal that we should exit the accept loop. The caller's intent
+			// (isShutdown=true) is the canonical signal here, more reliable
+			// than the existing locale-/JVM-version-dependent string match in
+			// fireServerError. Suppressing the spurious serverError event also
+			// prevents listener-driven alerting from raising false alarms on
+			// every clean shutdown.
+			if (!isShutdown) {
+				fireServerError(e);
+			}
 		}
 		fireServerStopped();
 		removeListener(this);

@@ -85,10 +85,11 @@ def start_echo_server():
 
 
 def start_echo_server_process():
-    # XXX DO NOT FORGET TO KILL THE PROCESS IF THE TEST DOES NOT SUCCEED
     sleep()
     p = Process(target=start_echo_server)
     p.start()
+    # Echo server doesn't speak the gateway protocol so we can't probe
+    # it via verify_jvm_or_terminate; rely on the historical 1.5 s wait.
     sleep(1.5)
     return p
 
@@ -112,20 +113,23 @@ def start_ipv6_example_server():
 
 
 def start_example_app_process():
-    # XXX DO NOT FORGET TO KILL THE PROCESS IF THE TEST DOES NOT SUCCEED
     p = Process(target=start_example_server)
     p.start()
     sleep()
-    check_connection()
+    # Verify the JVM actually accepted connections; if not, terminate
+    # the orphan process so it doesn't hold the default port for the
+    # next test. Previously we called check_connection() (which
+    # silently retries and returns) so a dead JVM looked alive and
+    # downstream tests failed with cryptic port conflicts.
+    verify_jvm_or_terminate(p)
     return p
 
 
 def start_short_timeout_app_process():
-    # XXX DO NOT FORGET TO KILL THE PROCESS IF THE TEST DOES NOT SUCCEED
     p = Process(target=start_short_timeout_example_server)
     p.start()
     sleep()
-    check_connection()
+    verify_jvm_or_terminate(p)
     return p
 
 
@@ -133,9 +137,12 @@ def start_ipv6_app_process():
     # XXX DO NOT FORGET TO KILL THE PROCESS IF THE TEST DOES NOT SUCCEED
     p = Process(target=start_ipv6_example_server)
     p.start()
-    # Sleep twice because we do not check connections.
+    # Wait briefly, then probe ::1 once to confirm the JVM is accepting
+    # connections. The historical sleep(); sleep() (500 ms) gave no
+    # readiness signal; check_connection() retries once with a 2 s
+    # backoff if the first connect fails.
     sleep()
-    sleep()
+    check_connection(GatewayParameters(address="::1"))
     return p
 
 
@@ -166,6 +173,90 @@ def safe_shutdown(instance):
             print_exc()
 
 
+def safe_terminate_process(p, timeout=5):
+    """Best-effort process kill: terminate, then kill if it doesn't exit.
+
+    Used by start-and-verify helpers when the spawned JVM never came up
+    (so we don't leak an orphan process holding the default port for
+    later tests in the same CI cell).
+    """
+    if p is None:
+        return
+    try:
+        if p.is_alive():
+            p.terminate()
+            p.join(timeout=timeout)
+        if p.is_alive():
+            try:
+                p.kill()
+                p.join(timeout=2)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def safe_join(p, timeout=10):
+    """Bounded process join with terminate fallback.
+
+    Replaces unbounded p.join() in test context managers. The previous
+    pattern would hang the entire CI cell for the full 20-minute job
+    timeout if a JVM didn't shut down cleanly, which then cascaded into
+    port-conflict failures on every subsequent test in the file.
+    """
+    if p is None:
+        return
+    try:
+        p.join(timeout=timeout)
+    except Exception:
+        pass
+    if p.is_alive():
+        safe_terminate_process(p)
+
+
+def verify_jvm_or_terminate(
+        p, gateway_parameters=None, max_retries=4, retry_delay=2):
+    """Verify the spawned JVM is actually accepting connections; if it
+    isn't, terminate the spawned process and raise.
+
+    The lower-level ``check_connection`` swallows ``Py4JNetworkError``
+    (sleeps 2 s and returns) so it can absorb transient races. That's
+    fine when the JVM eventually does come up; it's harmful when the
+    JVM is genuinely dead, because the start helper then returns a
+    "started" process that nothing can connect to and the test fails
+    with a cryptic Py4JError downstream while leaking the orphan
+    process onto the default port. This wrapper catches that case and
+    cleans up.
+
+    Default budget: initial probe + 4 retries x 2 s = up to ~8 s for
+    the JVM to come up, which covers slow Windows CI runners where
+    JVM cold-start under heavy CPU load can exceed 5 s.
+    """
+    test_gateway = JavaGateway(gateway_parameters=gateway_parameters)
+    last_error = None
+    try:
+        for attempt in range(max_retries + 1):
+            try:
+                test_gateway.jvm.System.currentTimeMillis()
+                return
+            except Py4JNetworkError as e:
+                last_error = e
+                if attempt < max_retries:
+                    sleep(retry_delay)
+        safe_terminate_process(p)
+        raise Py4JNetworkError(
+            "JVM subprocess did not accept connections after "
+            "{} retries (~{}s total); orphan process terminated to "
+            "free port for subsequent tests".format(
+                max_retries, max_retries * retry_delay)
+        ) from last_error
+    finally:
+        try:
+            test_gateway.close()
+        except Exception:
+            pass
+
+
 @contextmanager
 def gateway(*args, **kwargs):
     g = JavaGateway(
@@ -186,7 +277,7 @@ def example_app_process():
     try:
         yield p
     finally:
-        p.join()
+        safe_join(p)
 
 
 class TestConnection(object):
@@ -577,29 +668,46 @@ class MemoryManagementTest(unittest.TestCase):
         self.gateway.shutdown()
 
     def testGCCollectNoMemoryManagement(self):
+        # Capture the finalizer-list baseline before the gateway is
+        # constructed and assert deltas, not absolute counts. The
+        # absolute-count assertion was flaky on macOS Python 3.12 CI
+        # because async finalizer callbacks for objects created by
+        # prior tests in this class can land in ThreadSafeFinalizer
+        # *after* setUp's clear_finalizers() runs - we observed 2
+        # leaked entries here on a green CI run with no other code
+        # changes. The sibling tests testDetach and testGCCollect
+        # already use this delta pattern; this brings
+        # testGCCollectNoMemoryManagement in line.
+        gc.collect()
+        finalizers_size_start = len(ThreadSafeFinalizer.finalizers)
+
         self.gateway = JavaGateway(
             gateway_parameters=GatewayParameters(
                 enable_memory_management=False))
         gc.collect()
-        # Should have nothing in the finalizers
-        self.assertEqual(len(ThreadSafeFinalizer.finalizers), 0)
+        # With enable_memory_management=False, gateway construction
+        # itself should not register any new finalizers.
+        self.assertEqual(
+            len(ThreadSafeFinalizer.finalizers) - finalizers_size_start, 0)
 
         def internal():
             sb = self.gateway.jvm.java.lang.StringBuffer()
             sb.append("Hello World")
             sb2 = self.gateway.jvm.java.lang.StringBuffer()
             sb2.append("Hello World")
-            finalizers_size_middle = len(ThreadSafeFinalizer.finalizers)
+            finalizers_size_middle = (
+                len(ThreadSafeFinalizer.finalizers) - finalizers_size_start)
             return finalizers_size_middle
         finalizers_size_middle = internal()
         gc.collect()
 
-        # Before collection: two objects created + two returned objects (append
-        # returns a stringbuffer reference for easy chaining).
+        # Memory management is off; even mid-test we should not have
+        # added finalizers for the StringBuffer objects.
         self.assertEqual(finalizers_size_middle, 0)
 
-        # Assert after collection
-        self.assertEqual(len(ThreadSafeFinalizer.finalizers), 0)
+        # And after a collect, still no new finalizers.
+        self.assertEqual(
+            len(ThreadSafeFinalizer.finalizers) - finalizers_size_start, 0)
 
         self.gateway.shutdown()
 
@@ -1039,19 +1147,21 @@ class GatewayLauncherTest(unittest.TestCase):
         # Popen.poll() returns None iff the subprocess has not terminated.
         self.assertTrue(self.gateway.java_process.poll() is None)
         self.gateway.shutdown()
-        # Unfortunately the Java process has not terminated quite yet.
-        # If we check that poll() is not None, we will often find that poll()
-        # still is None.
-        # One thing that definitely works is to wait one second and assert
-        # the Java process has terminated *then*.
-        # This is not ideal, since it introduces a bit of an extra delay in
-        # what would otherwise be a millisecond test.
-        # Waiting only a fraction of a second (2**-5) seems to be enough.
+        # This used to wait(2**-5) = 31 ms on the theory that
+        # "a fraction of a second seems to be enough". That turned out
+        # to be tight enough to cause TimeoutExpired flakes on Windows
+        # (hence the skipIf above) and, as of 2026-04, on loaded macOS
+        # CI runners too. We first bumped to 100 ms, then 1 s, but still
+        # hit TimeoutExpired on Py3.11/Java 21/macOS where JVM shutdown
+        # took >1 s on a busy runner. 5 s keeps the test bounded while
+        # giving two orders of magnitude of headroom over a healthy
+        # JVM's tens-of-ms shutdown - reaching 5 s indicates a real
+        # hang, not scheduler jitter.
         if sys.version_info < (3,):
             sleep()
             self.assertFalse(self.gateway.java_process.poll() is None)
         else:
-            self.gateway.java_process.wait(2**-5)
+            self.gateway.java_process.wait(5)
         # Popen.wait() will raise a TimeoutExpired exception if the subprocess
         # has not yet terminated.
 
@@ -1070,7 +1180,9 @@ class GatewayLauncherTest(unittest.TestCase):
             sleep()
             self.assertFalse(self.gateway.java_process.poll() is None)
         else:
-            self.gateway.java_process.wait(1)
+            # Same rationale as testShutdownSubprocess: 1 s timed out on
+            # Py3.11/Java 21/macOS. 5 s gives headroom for noisy CI.
+            self.gateway.java_process.wait(5)
 
     def testJavaopts(self):
         self.gateway = JavaGateway.launch_gateway(javaopts=["-Xmx64m"])

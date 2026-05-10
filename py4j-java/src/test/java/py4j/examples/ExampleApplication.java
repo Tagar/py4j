@@ -96,10 +96,17 @@ public class ExampleApplication {
 	public static class ExampleIPv6Application {
 		public static void main(String[] args) {
 			GatewayServer.turnLoggingOff();
+			// readTimeout(250) was copy-pasted from ExampleShortTimeoutApplication
+			// (where 250ms is intentional for timeout-behavior tests). On this
+			// IPv6 fixture the 250ms socket read-timeout would fire mid-stream
+			// when macOS+Java 21 IPv6 jitter caused a >250ms pause, returning
+			// truncated bytes that surfaced as Py4JJavaError "<exception str()
+			// failed>". 10s gives the typical ms-scale read two orders of
+			// magnitude of headroom while still bounding genuine hangs.
 			CallbackClient callbackClient = new CallbackClient(GatewayServer.DEFAULT_PYTHON_PORT,
 					GatewayServer.defaultIPv6Address(), CallbackClient.DEFAULT_MIN_CONNECTION_TIME,
-					CallbackClient.DEFAULT_MIN_CONNECTION_TIME_UNIT, SocketFactory.getDefault(), false, 250);
-			GatewayServer server = new GatewayServer.GatewayServerBuilder().readTimeout(250)
+					CallbackClient.DEFAULT_MIN_CONNECTION_TIME_UNIT, SocketFactory.getDefault(), false, 10000);
+			GatewayServer server = new GatewayServer.GatewayServerBuilder().readTimeout(10000)
 					.entryPoint(new ExampleEntryPoint()).callbackClient(callbackClient)
 					.javaAddress(GatewayServer.defaultIPv6Address()).build();
 			server.start();
