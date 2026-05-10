@@ -97,6 +97,7 @@ public class ClientServerTest {
 		server.shutdown();
 	}
 
+	/**
 	 * Regression test: when listeners are registered through
 	 * {@code preStartListener}, they must observe the {@code serverStarted}
 	 * event (no race with auto-start in the constructor).
