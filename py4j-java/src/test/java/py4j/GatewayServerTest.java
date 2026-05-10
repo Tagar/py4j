@@ -154,6 +154,44 @@ public class GatewayServerTest {
 		assertTrue(listener.values.contains(new Long(10000)));
 	}
 
+	/**
+	 * Regression test: verify that a normal {@code shutdown()} does NOT fire
+	 * {@code serverError}.
+	 *
+	 * Before the fix, {@link GatewayServer#run()} caught the
+	 * {@code SocketException} that {@code accept()} throws after
+	 * {@code shutdown()} closes the server socket, and routed it through
+	 * {@code fireServerError(e)}. {@code fireServerError} attempts to filter
+	 * via a {@code "socket closed"} string match on the exception message,
+	 * but that filter is locale- and JVM-version-dependent. The robust fix
+	 * is to skip {@code fireServerError} entirely when {@code isShutdown}
+	 * is set.
+	 */
+	@Test
+	public void testListenerNoSpuriousErrorOnShutdown() {
+		TestListener listener = new TestListener();
+		// Use DEFAULT_PORT + 2 to avoid clashing with testListener.
+		GatewayServer server = new GatewayServer(null, GatewayServer.DEFAULT_PORT + 2);
+		server.addListener(listener);
+		server.start();
+		try {
+			Thread.sleep(250);
+		} catch (Exception e) {
+		}
+		server.shutdown();
+		try {
+			Thread.sleep(250);
+		} catch (Exception e) {
+		}
+		// 100 = serverError. It must NOT fire on a clean shutdown.
+		assertFalse("serverError fired during a normal shutdown", listener.values.contains(new Long(100)));
+		// Sanity: the four expected lifecycle events all fired.
+		assertTrue(listener.values.contains(new Long(1)));
+		assertTrue(listener.values.contains(new Long(10)));
+		assertTrue(listener.values.contains(new Long(1000)));
+		assertTrue(listener.values.contains(new Long(10000)));
+	}
+
 	@Test
 	public void testEphemeralPort() {
 		GatewayServer server = new GatewayServer(null, 0);
