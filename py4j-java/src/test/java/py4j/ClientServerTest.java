@@ -30,6 +30,7 @@
 package py4j;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 import org.junit.Test;
@@ -39,28 +40,43 @@ public class ClientServerTest {
 	@Test
 	public void testListenerClientServer() {
 		TestListener listener = new TestListener();
-		ClientServer server1 = new ClientServer(null);
-		Py4JJavaServer javaServer = server1.getJavaServer();
-		javaServer.addListener(listener);
-		server1.startServer(true);
-		try {
-			Thread.sleep(250);
-		} catch (Exception e) {
-
-		}
+		// Use preStartListener so the listener is attached before the
+		// server thread spawns (which fires serverStarted asynchronously).
+		// Without this, the listener would race the constructor's
+		// auto-start path and miss serverStarted on fast machines. The
+		// preStartListener builder method was added to address exactly
+		// this race; see ClientServerBuilder.preStartListener javadoc.
+		ClientServer server1 = new ClientServer.ClientServerBuilder(null).preStartListener(listener).build();
+		// Listener events fire from a background thread (GatewayServer.run()),
+		// so startServer/shutdown return before serverStarted/serverStopped
+		// land in listener.values. Poll for the expected events instead of
+		// blind-sleeping: a healthy runner finishes in tens of ms, but a
+		// loaded CI runner can take seconds.
+		waitForListenerSize(listener, 1, 10000);
 		server1.shutdown();
-		try {
-			Thread.sleep(250);
-		} catch (Exception e) {
-
-		}
+		waitForListenerSize(listener, 4, 10000);
 		// Started, PreShutdown, Stopped, PostShutdown
 		// But order cannot be guaranteed because two threads are competing.
 		assertTrue(listener.values.contains(new Long(1)));
 		assertTrue(listener.values.contains(new Long(10)));
 		assertTrue(listener.values.contains(new Long(1000)));
 		assertTrue(listener.values.contains(new Long(10000)));
+		// With the run() catch-handler fix in PR-D (skip fireServerError
+		// when isShutdown is set), the 4 expected events are the only ones
+		// that fire on a clean shutdown.
 		assertEquals(4, listener.values.size());
+	}
+
+	private static void waitForListenerSize(TestListener listener, int target, long timeoutMs) {
+		long deadline = System.currentTimeMillis() + timeoutMs;
+		while (listener.values.size() < target && System.currentTimeMillis() < deadline) {
+			try {
+				Thread.sleep(20);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				return;
+			}
+		}
 	}
 
 	@Test
@@ -76,6 +92,106 @@ public class ClientServerTest {
 		int listeningPort = javaServer.getListeningPort();
 		assertTrue(listeningPort > 0);
 		assertTrue(javaServer.getPort() != listeningPort);
+		server.shutdown();
+	}
+
+	/**
+	 * Regression test: when listeners are registered through
+	 * {@code preStartListener}, they must observe the {@code serverStarted}
+	 * event (no race with auto-start in the constructor).
+	 *
+	 * Before the fix, the only way to observe the {@code serverStarted}
+	 * event with the default builder (autoStartJavaServer=true) was to
+	 * race-attach the listener after construction; the listener typically
+	 * missed the event on fast machines. The new {@code preStartListener}
+	 * builder method registers the listener before the server thread is
+	 * spawned.
+	 */
+	@Test
+	public void testPreStartListenerObservesServerStarted() {
+		TestListener listener = new TestListener();
+		ClientServer server = new ClientServer.ClientServerBuilder(null).javaPort(0).preStartListener(listener).build();
+		// Even on the fastest machines, the listener must catch serverStarted.
+		long deadline = System.currentTimeMillis() + 5000;
+		while (!listener.values.contains(new Long(1)) && System.currentTimeMillis() < deadline) {
+			try {
+				Thread.sleep(20);
+			} catch (InterruptedException e) {
+				Thread.currentThread().interrupt();
+				break;
+			}
+		}
+		assertTrue("preStartListener missed serverStarted", listener.values.contains(new Long(1)));
+		server.shutdown();
+	}
+
+	/**
+	 * Regression test: a normal {@code shutdown()} on a {@link ClientServer}
+	 * must NOT fire {@code serverError}.
+	 *
+	 * Same root cause as
+	 * {@code GatewayServerTest.testListenerNoSpuriousErrorOnShutdown}: the
+	 * server thread's catch handler used to route the SocketException from
+	 * normal shutdown through {@code fireServerError}.
+	 */
+	@Test
+	public void testListenerNoSpuriousErrorOnShutdown() {
+		TestListener listener = new TestListener();
+		ClientServer server = new ClientServer.ClientServerBuilder(null).javaPort(0).preStartListener(listener).build();
+		try {
+			Thread.sleep(250);
+		} catch (Exception e) {
+		}
+		server.shutdown();
+		try {
+			Thread.sleep(250);
+		} catch (Exception e) {
+		}
+		// 100 = serverError. It must NOT fire on a clean shutdown.
+		assertFalse("serverError fired during a normal shutdown", listener.values.contains(new Long(100)));
+	}
+
+	/**
+	 * Regression test: when {@code preStartListener} is combined with
+	 * {@code autoStartJavaServer(false)}, the listener must be attached
+	 * but the server must NOT auto-start in the constructor — the user
+	 * is responsible for calling {@code startServer()} explicitly.
+	 */
+	@Test
+	public void testPreStartListenerWithAutoStartFalse() throws InterruptedException {
+		TestListener listener = new TestListener();
+		ClientServer server = new ClientServer.ClientServerBuilder(null).javaPort(0).autoStartJavaServer(false)
+				.preStartListener(listener).build();
+		// With autoStartJavaServer(false), no events should fire yet.
+		Thread.sleep(200);
+		assertEquals("server should not be running yet", 0, listener.values.size());
+		// Now start the server and verify the listener catches serverStarted.
+		server.startServer(true);
+		long deadline = System.currentTimeMillis() + 5000;
+		while (!listener.values.contains(new Long(1)) && System.currentTimeMillis() < deadline) {
+			Thread.sleep(20);
+		}
+		assertTrue("listener missed serverStarted after explicit startServer", listener.values.contains(new Long(1)));
+		server.shutdown();
+	}
+
+	/**
+	 * Regression test: multiple {@code preStartListener} calls register
+	 * each listener, and all of them observe the lifecycle events.
+	 */
+	@Test
+	public void testMultiplePreStartListeners() throws InterruptedException {
+		TestListener listener1 = new TestListener();
+		TestListener listener2 = new TestListener();
+		ClientServer server = new ClientServer.ClientServerBuilder(null).javaPort(0).preStartListener(listener1)
+				.preStartListener(listener2).build();
+		long deadline = System.currentTimeMillis() + 5000;
+		while ((!listener1.values.contains(new Long(1)) || !listener2.values.contains(new Long(1)))
+				&& System.currentTimeMillis() < deadline) {
+			Thread.sleep(20);
+		}
+		assertTrue("first listener missed serverStarted", listener1.values.contains(new Long(1)));
+		assertTrue("second listener missed serverStarted", listener2.values.contains(new Long(1)));
 		server.shutdown();
 	}
 }

@@ -12,7 +12,8 @@ from py4j.java_gateway import (
 from py4j.clientserver import (
     ClientServer, JavaParameters, PythonParameters)
 from py4j.tests.java_gateway_test import (
-    PY4J_JAVA_PATH, check_connection, sleep)
+    PY4J_JAVA_PATH, check_connection, safe_join, sleep,
+    verify_jvm_or_terminate)
 from py4j.tests.py4j_callback_recursive_example import HelloState
 from py4j.tests.instrumented import (
     InstrJavaGateway, InstrumentedPythonPing, register_creation,
@@ -32,14 +33,18 @@ def start_instrumented_clientserver():
 
 
 def start_gateway_server_example_app_process(start_gateway_server=True):
-    # XXX DO NOT FORGET TO KILL THE PROCESS IF THE TEST DOES NOT SUCCEED
     if start_gateway_server:
         p = Process(target=start_instrumented_gateway_server)
     else:
         p = Process(target=start_instrumented_clientserver)
     p.start()
     sleep()
-    check_connection()
+    # Verify the JVM accepted connections; terminate orphan if not.
+    # Both modes here run the Java side as a server on DEFAULT_PORT
+    # (InstrumentedApplication uses GatewayServer; the client-server
+    # variant uses ClientServer in single-thread mode but still
+    # listens on DEFAULT_PORT).
+    verify_jvm_or_terminate(p)
     return p
 
 
@@ -49,7 +54,9 @@ def gateway_server_example_app_process(start_gateway_server=True):
     try:
         yield p
     finally:
-        p.join()
+        # Bounded join + terminate fallback; avoid hanging the entire
+        # CI cell on a slow shutdown.
+        safe_join(p)
 
 
 class HelloState2(HelloState):

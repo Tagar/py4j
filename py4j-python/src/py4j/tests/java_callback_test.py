@@ -18,7 +18,8 @@ from py4j.java_gateway import (
     set_default_callback_accept_timeout, is_instance_of)
 from py4j.protocol import Py4JJavaError
 from py4j.tests.java_gateway_test import (
-    PY4J_JAVA_PATH, safe_shutdown, sleep, check_connection)
+    PY4J_JAVA_PATH, safe_join, safe_shutdown, sleep, check_connection,
+    verify_jvm_or_terminate)
 
 
 set_default_callback_accept_timeout(0.125)
@@ -56,7 +57,6 @@ def start_example_server3():
 
 
 def start_example_app_process(app=None, args=()):
-    # XXX DO NOT FORGET TO KILL THE PROCESS IF THE TEST DOES NOT SUCCEED
     if not app:
         target = start_example_server
     elif app == "nomem":
@@ -66,7 +66,9 @@ def start_example_app_process(app=None, args=()):
     p = Process(target=target, args=args)
     p.start()
     sleep()
-    check_connection()
+    # Verify the JVM accepted connections; terminate orphan if not.
+    # See verify_jvm_or_terminate docstring for full rationale.
+    verify_jvm_or_terminate(p)
     return p
 
 
@@ -76,24 +78,24 @@ def gateway_example_app_process(app=None, args=()):
     try:
         yield p
     finally:
-        p.join()
+        # Bounded join + terminate fallback (vs unbounded p.join()
+        # which could hang the entire CI cell).
+        safe_join(p)
 
 
 def start_example_app_process2():
-    # XXX DO NOT FORGET TO KILL THE PROCESS IF THE TEST DOES NOT SUCCEED
     p = Process(target=start_example_server2)
     p.start()
     sleep()
-    check_connection()
+    verify_jvm_or_terminate(p)
     return p
 
 
 def start_example_app_process3():
-    # XXX DO NOT FORGET TO KILL THE PROCESS IF THE TEST DOES NOT SUCCEED
     p = Process(target=start_example_server3)
     p.start()
     sleep()
-    check_connection()
+    verify_jvm_or_terminate(p)
     return p
 
 
@@ -245,6 +247,14 @@ class PythonEntryPointTest(unittest.TestCase):
         if auth_token:
             args = [auth_token]
         with gateway_example_app_process("pythonentrypoint", args):
+            # Wait for both Java->Python callbacks to land before
+            # shutting the gateway down. Without this, gateway.shutdown()
+            # can race the second callback on slow runners (observed on
+            # Py3.9/Java 11/macOS) and we'd see only 1 call instead of 2.
+            for _ in range(50):  # ~5 s budget
+                if len(hello_state.calls) >= 2:
+                    break
+                sleep(0.1)
             gateway.shutdown()
 
         # Check that Java correctly called Python
