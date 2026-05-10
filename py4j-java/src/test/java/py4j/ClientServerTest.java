@@ -33,6 +33,8 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
+import java.net.Socket;
+
 import org.junit.Test;
 
 public class ClientServerTest {
@@ -95,7 +97,6 @@ public class ClientServerTest {
 		server.shutdown();
 	}
 
-	/**
 	 * Regression test: when listeners are registered through
 	 * {@code preStartListener}, they must observe the {@code serverStarted}
 	 * event (no race with auto-start in the constructor).
@@ -193,5 +194,36 @@ public class ClientServerTest {
 		assertTrue("first listener missed serverStarted", listener1.values.contains(new Long(1)));
 		assertTrue("second listener missed serverStarted", listener2.values.contains(new Long(1)));
 		server.shutdown();
+	}
+
+	/**
+	 * Regression test: {@code ClientServer.shutdown(int gracePeriodMs)}
+	 * delegates to the underlying {@code Py4JJavaServer.shutdown(true,
+	 * gracePeriodMs)}. The grace period must be honored; with an active
+	 * connection that doesn't drain, the shutdown should return at the
+	 * deadline (not earlier).
+	 */
+	@Test
+	public void testClientServerGracefulShutdown() throws Exception {
+		ClientServer cs = new ClientServer.ClientServerBuilder(null).javaPort(0).build();
+		Thread.sleep(100);
+		Py4JJavaServer javaServer = cs.getJavaServer();
+		final int port = javaServer.getListeningPort();
+		// Open a connection so the grace-period drain has work to do.
+		Socket client = new Socket("127.0.0.1", port);
+		Thread.sleep(100);
+
+		long start = System.currentTimeMillis();
+		// 500ms grace period; client never closes — shutdown should respect
+		// the deadline.
+		cs.shutdown(500);
+		long elapsed = System.currentTimeMillis() - start;
+		assertTrue("ClientServer.shutdown(int) returned before deadline: " + elapsed + "ms", elapsed >= 400);
+		assertTrue("ClientServer.shutdown(int) took much longer than deadline: " + elapsed + "ms", elapsed < 2000);
+
+		try {
+			client.close();
+		} catch (Exception ignored) {
+		}
 	}
 }

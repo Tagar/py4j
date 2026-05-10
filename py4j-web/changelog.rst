@@ -26,6 +26,17 @@ Unreleased
     ``new ClientServer.ClientServerBuilder(...).preStartListener(myListener).build()``
     to attach a listener reliably before startup.
 
+- Java side: Add an opt-in graceful shutdown drain for
+  ``GatewayServer`` / ``ClientServer``. The new overload
+  ``shutdown(boolean shutdownCallbackClient, int gracePeriodMs)`` (and the
+  shorter ``ClientServer.shutdown(int gracePeriodMs)``) waits up to
+  ``gracePeriodMs`` for in-flight requests and Java-to-Python callbacks to
+  drain before tearing down connections. Default behavior of ``shutdown()`` /
+  ``shutdown(boolean)`` is unchanged (``gracePeriodMs == 0`` = abrupt,
+  back-compat). Before this fix, ``shutdown()`` immediately force-closed all
+  active connections, silently dropping work in flight — a real-world
+  data-loss risk for callback-heavy workflows.
+
 Py4J 0.10.9.9
 -------------
 
