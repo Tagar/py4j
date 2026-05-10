@@ -211,6 +211,21 @@ public class ClientServer {
 
 	/**
 	 * <p>
+	 * Shuts down the Java Server with an optional grace period for in-flight
+	 * connections to drain. See
+	 * {@link GatewayServer#shutdown(boolean, int)} for details.
+	 * </p>
+	 *
+	 * @param gracePeriodMs Maximum time in milliseconds to wait for active
+	 *                                   connections to drain. {@code 0} =
+	 *                                   abrupt (back-compat).
+	 */
+	public void shutdown(int gracePeriodMs) {
+		this.javaServer.shutdown(true, gracePeriodMs);
+	}
+
+	/**
+	 * <p>
 	 * Gets a reference to the entry point on the Python side. This is often
 	 * necessary if Java is driving the communication because Java cannot call
 	 * static methods, initialize Python objects or load Python modules yet.

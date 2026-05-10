@@ -479,9 +479,18 @@ public class GatewayServer extends DefaultGatewayServerListener implements Py4JJ
 	public void connectionStopped(Py4JServerConnection gatewayConnection) {
 		try {
 			lock.lock();
-			if (!isShutdown) {
-				connections.remove(gatewayConnection);
-			}
+			// Always remove from the connections list, even during shutdown.
+			// The previous "skip-if-isShutdown" optimization avoided redundant
+			// work because abrupt shutdown's force-close iteration would clear
+			// the list anyway. With graceful shutdown drain
+			// (shutdown(boolean, int) with gracePeriodMs > 0), the drain loop
+			// polls connections.size() to detect when in-flight requests
+			// finish; if connectionStopped doesn't decrement during shutdown
+			// the drain loop spins until the deadline. Always-remove is
+			// equivalent to the old behavior in the abrupt path (the
+			// subsequent connections.clear() becomes redundant rather than
+			// load-bearing) and makes graceful drain work.
+			connections.remove(gatewayConnection);
 		} finally {
 			lock.unlock();
 		}
@@ -728,6 +737,43 @@ public class GatewayServer extends DefaultGatewayServerListener implements Py4JJ
 	 *                                  instance.
 	 */
 	public void shutdown(boolean shutdownCallbackClient) {
+		shutdown(shutdownCallbackClient, 0);
+	}
+
+	/**
+	 * <p>
+	 * Stops accepting connections, optionally waits up to {@code gracePeriodMs}
+	 * milliseconds for in-flight requests to finish, then closes any
+	 * remaining connections and calls {@link py4j.Gateway#shutdown() Gateway.shutdown()}.
+	 * </p>
+	 *
+	 * <p>
+	 * The default ({@code gracePeriodMs == 0}) is back-compatible with the
+	 * historical abrupt shutdown behavior. Setting a positive value gives
+	 * in-flight Python-to-Java calls and Java-to-Python callbacks a chance
+	 * to complete before their connection is torn down. Industry-standard
+	 * graceful shutdown sequence:
+	 * </p>
+	 * <ol>
+	 * <li>Stop accepting new connections (close the server socket)</li>
+	 * <li>Wait up to {@code gracePeriodMs} for active connections to drain</li>
+	 * <li>Force-close any remaining connections</li>
+	 * </ol>
+	 *
+	 * <p>
+	 * Active connections are tracked by adding to {@code connections} on
+	 * accept and removing on {@code connection.shutdown()}; this method polls
+	 * {@code connections.size()} at 20ms intervals during the grace window.
+	 * </p>
+	 *
+	 * @param shutdownCallbackClient If True, shuts down the CallbackClient
+	 *                                  instance.
+	 * @param gracePeriodMs Maximum time in milliseconds to wait for active
+	 *                                  connections to drain. {@code 0} = abrupt
+	 *                                  (back-compat). Negative values are
+	 *                                  treated as {@code 0}.
+	 */
+	public void shutdown(boolean shutdownCallbackClient, int gracePeriodMs) {
 		fireServerPreShutdown();
 		try {
 			lock.lock();
@@ -738,6 +784,26 @@ public class GatewayServer extends DefaultGatewayServerListener implements Py4JJ
 			isShutdown = true;
 			isShuttingDown = true;
 			NetworkUtil.quietlyClose(sSocket);
+
+			// Graceful drain: wait up to gracePeriodMs for in-flight requests
+			// to finish so callbacks/calls don't get terminated mid-execution.
+			// Releases the lock during the sleep so connections can complete
+			// (their cleanup paths take the same lock).
+			if (gracePeriodMs > 0) {
+				long deadline = System.currentTimeMillis() + gracePeriodMs;
+				while (!connections.isEmpty() && System.currentTimeMillis() < deadline) {
+					lock.unlock();
+					try {
+						Thread.sleep(20);
+					} catch (InterruptedException ie) {
+						Thread.currentThread().interrupt();
+						lock.lock();
+						break;
+					}
+					lock.lock();
+				}
+			}
+
 			ArrayList<Py4JServerConnection> tempConnections = new ArrayList<Py4JServerConnection>(connections);
 			for (Py4JServerConnection connection : tempConnections) {
 				connection.shutdown();
