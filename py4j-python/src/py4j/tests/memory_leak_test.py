@@ -99,6 +99,32 @@ def python_gc():
         gc.collect()
 
 
+def wait_for_created_count(gateway, target, timeout_s=10):
+    """Poll MetricRegistry.getCreatedObjectsKeySet() until its size
+    reaches `target` (or the timeout elapses).
+
+    Replaces blind `sleep()` waits after forceFinalization(). The
+    expected created-objects count is the test's actual invariant.
+    The async chain - Python GC -> Java finalizer -> Java-to-Python
+    free-object callback -> JavaServer accepts the inbound socket -
+    has no synchronous drain primitive, so the test has to wait for
+    it to settle. Polling waits only as long as actually needed
+    (typically tens of ms; the prior 250 ms sleep was too short on
+    loaded CI runners). A real bug that prevents the count from
+    reaching `target` still fails: the subsequent assertEqual catches
+    it, just after a bounded wait instead of a flaky race.
+    """
+    import time
+    deadline = time.time() + timeout_s
+    mr = gateway.jvm.py4j.instrumented.MetricRegistry
+    while time.time() < deadline:
+        python_gc()
+        mr.forceFinalization()
+        if len(mr.getCreatedObjectsKeySet()) >= target:
+            return
+        time.sleep(0.1)
+
+
 class GatewayServerTest(unittest.TestCase):
 
     def tearDown(self):
@@ -559,10 +585,13 @@ class ClientServerTest(unittest.TestCase):
             clientserver.entry_point.startServer2()
 
             def perform_memory_tests():
-                python_gc()
-                clientserver.jvm.py4j.instrumented.MetricRegistry.\
-                    forceFinalization()
-                sleep()
+                # Poll for the expected created-objects count instead
+                # of blind-sleeping 250 ms. The 3rd
+                # InstrClientServerConnection is constructed
+                # asynchronously when the Java finalizer runs and
+                # opens a callback socket back to Python; on slow CI
+                # that chain takes longer than 250 ms.
+                wait_for_created_count(clientserver, target=6)
 
                 createdSet = clientserver.jvm.py4j.instrumented.\
                     MetricRegistry.getCreatedObjectsKeySet()
