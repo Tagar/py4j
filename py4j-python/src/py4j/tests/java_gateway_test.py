@@ -88,43 +88,17 @@ def start_echo_server_process():
     sleep()
     p = Process(target=start_echo_server)
     p.start()
-    # Poll for TEST_PORT to start accepting connections rather than
-    # blind-sleeping 1.5 s. JVM cold-start on slow Windows runners can
-    # exceed 1.5 s; the next thing the test does is a synchronous
-    # socket.connect(TEST_PORT) that errors with ConnectionRefusedError
-    # if the JVM hasn't bound yet. The probe opens-and-closes a TCP
-    # connection; EchoServer's accept loop hands the probe to a
-    # per-connection thread that immediately reads EOF and finishes,
-    # so it does not interfere with the test's subsequent connect.
-    _wait_for_tcp_listening("127.0.0.1", TEST_PORT, timeout_s=10)
+    # EchoServer accepts EXACTLY ONE connection per port (see
+    # py4j-java/src/test/java/py4j/EchoServer.java:80-99) and reads
+    # commands from that single socket until EOF. Any TCP readiness
+    # probe consumes that single accept, leaving the test's
+    # subsequent get_socket() with no listener. So we cannot
+    # readiness-probe this server; fall back to a generous blind
+    # wait. Bumped from 1.5 s -> 5 s after observing
+    # ConnectionRefusedError on Py3.12 / Java 21 / windows-latest
+    # when JVM cold-start exceeded 1.5 s.
+    sleep(5)
     return p
-
-
-def _wait_for_tcp_listening(host, port, timeout_s=10):
-    """Poll until a TCP server accepts a connection on (host, port).
-
-    Returns silently in both the success and timeout cases; the caller
-    is expected to follow with its own connect+assertion that will
-    surface a real failure if the server never came up. This is a
-    readiness probe, not an error path.
-    """
-    import time
-    from socket import socket, AF_INET, SOCK_STREAM
-    deadline = time.time() + timeout_s
-    while time.time() < deadline:
-        s = socket(AF_INET, SOCK_STREAM)
-        try:
-            s.settimeout(0.5)
-            s.connect((host, port))
-            return
-        except Exception:
-            pass
-        finally:
-            try:
-                s.close()
-            except Exception:
-                pass
-        time.sleep(0.1)
 
 
 def start_example_server():
