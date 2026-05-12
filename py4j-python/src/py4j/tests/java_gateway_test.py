@@ -89,7 +89,16 @@ def start_echo_server_process():
     sleep()
     p = Process(target=start_echo_server)
     p.start()
-    sleep(1.5)
+    # EchoServer accepts EXACTLY ONE connection per port (see
+    # py4j-java/src/test/java/py4j/EchoServer.java:80-99) and reads
+    # commands from that single socket until EOF. Any TCP readiness
+    # probe consumes that single accept, leaving the test's
+    # subsequent get_socket() with no listener. So we cannot
+    # readiness-probe this server; fall back to a generous blind
+    # wait. Bumped from 1.5 s -> 5 s after observing
+    # ConnectionRefusedError on Py3.12 / Java 21 / windows-latest
+    # when JVM cold-start exceeded 1.5 s.
+    sleep(5)
     return p
 
 
@@ -133,9 +142,12 @@ def start_ipv6_app_process():
     # XXX DO NOT FORGET TO KILL THE PROCESS IF THE TEST DOES NOT SUCCEED
     p = Process(target=start_ipv6_example_server)
     p.start()
-    # Sleep twice because we do not check connections.
+    # Wait briefly, then probe ::1 once to confirm the JVM is accepting
+    # connections. The historical sleep(); sleep() (500 ms) gave no
+    # readiness signal; check_connection() retries once with a 2 s
+    # backoff if the first connect fails.
     sleep()
-    sleep()
+    check_connection(GatewayParameters(address="::1"))
     return p
 
 
@@ -577,29 +589,46 @@ class MemoryManagementTest(unittest.TestCase):
         self.gateway.shutdown()
 
     def testGCCollectNoMemoryManagement(self):
+        # Capture the finalizer-list baseline before the gateway is
+        # constructed and assert deltas, not absolute counts. The
+        # absolute-count assertion was flaky on macOS Python 3.12 CI
+        # because async finalizer callbacks for objects created by
+        # prior tests in this class can land in ThreadSafeFinalizer
+        # *after* setUp's clear_finalizers() runs - we observed 2
+        # leaked entries here on a green CI run with no other code
+        # changes. The sibling tests testDetach and testGCCollect
+        # already use this delta pattern; this brings
+        # testGCCollectNoMemoryManagement in line.
+        gc.collect()
+        finalizers_size_start = len(ThreadSafeFinalizer.finalizers)
+
         self.gateway = JavaGateway(
             gateway_parameters=GatewayParameters(
                 enable_memory_management=False))
         gc.collect()
-        # Should have nothing in the finalizers
-        self.assertEqual(len(ThreadSafeFinalizer.finalizers), 0)
+        # With enable_memory_management=False, gateway construction
+        # itself should not register any new finalizers.
+        self.assertEqual(
+            len(ThreadSafeFinalizer.finalizers) - finalizers_size_start, 0)
 
         def internal():
             sb = self.gateway.jvm.java.lang.StringBuffer()
             sb.append("Hello World")
             sb2 = self.gateway.jvm.java.lang.StringBuffer()
             sb2.append("Hello World")
-            finalizers_size_middle = len(ThreadSafeFinalizer.finalizers)
+            finalizers_size_middle = (
+                len(ThreadSafeFinalizer.finalizers) - finalizers_size_start)
             return finalizers_size_middle
         finalizers_size_middle = internal()
         gc.collect()
 
-        # Before collection: two objects created + two returned objects (append
-        # returns a stringbuffer reference for easy chaining).
+        # Memory management is off; even mid-test we should not have
+        # added finalizers for the StringBuffer objects.
         self.assertEqual(finalizers_size_middle, 0)
 
-        # Assert after collection
-        self.assertEqual(len(ThreadSafeFinalizer.finalizers), 0)
+        # And after a collect, still no new finalizers.
+        self.assertEqual(
+            len(ThreadSafeFinalizer.finalizers) - finalizers_size_start, 0)
 
         self.gateway.shutdown()
 
@@ -1039,19 +1068,21 @@ class GatewayLauncherTest(unittest.TestCase):
         # Popen.poll() returns None iff the subprocess has not terminated.
         self.assertTrue(self.gateway.java_process.poll() is None)
         self.gateway.shutdown()
-        # Unfortunately the Java process has not terminated quite yet.
-        # If we check that poll() is not None, we will often find that poll()
-        # still is None.
-        # One thing that definitely works is to wait one second and assert
-        # the Java process has terminated *then*.
-        # This is not ideal, since it introduces a bit of an extra delay in
-        # what would otherwise be a millisecond test.
-        # Waiting only a fraction of a second (2**-5) seems to be enough.
+        # This used to wait(2**-5) = 31 ms on the theory that
+        # "a fraction of a second seems to be enough". That turned out
+        # to be tight enough to cause TimeoutExpired flakes on Windows
+        # (hence the skipIf above) and, as of 2026-04, on loaded macOS
+        # CI runners too. We first bumped to 100 ms, then 1 s, but still
+        # hit TimeoutExpired on Py3.11/Java 21/macOS where JVM shutdown
+        # took >1 s on a busy runner. 5 s keeps the test bounded while
+        # giving two orders of magnitude of headroom over a healthy
+        # JVM's tens-of-ms shutdown - reaching 5 s indicates a real
+        # hang, not scheduler jitter.
         if sys.version_info < (3,):
             sleep()
             self.assertFalse(self.gateway.java_process.poll() is None)
         else:
-            self.gateway.java_process.wait(2**-5)
+            self.gateway.java_process.wait(5)
         # Popen.wait() will raise a TimeoutExpired exception if the subprocess
         # has not yet terminated.
 
@@ -1070,7 +1101,9 @@ class GatewayLauncherTest(unittest.TestCase):
             sleep()
             self.assertFalse(self.gateway.java_process.poll() is None)
         else:
-            self.gateway.java_process.wait(1)
+            # Same rationale as testShutdownSubprocess: 1 s timed out on
+            # Py3.11/Java 21/macOS. 5 s gives headroom for noisy CI.
+            self.gateway.java_process.wait(5)
 
     def testJavaopts(self):
         self.gateway = JavaGateway.launch_gateway(javaopts=["-Xmx64m"])

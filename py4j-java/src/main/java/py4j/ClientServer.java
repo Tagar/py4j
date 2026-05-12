@@ -30,6 +30,8 @@
 package py4j;
 
 import java.net.InetAddress;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 import java.util.logging.Logger;
 
@@ -75,6 +77,23 @@ public class ClientServer {
 	protected final Logger logger = Logger.getLogger(ClientServer.class.getName());
 
 	/**
+	 * <p>Constructs a ClientServer with default configuration and starts the
+	 * Java server thread inside this constructor (autoStartJavaServer=true).</p>
+	 *
+	 * <p><b>Listener race warning:</b> because the server thread is launched
+	 * inside this constructor, any listener attached <i>after</i> construction
+	 * may miss the {@code serverStarted} event. The pattern below is racy:</p>
+	 *
+	 * <pre>
+	 * ClientServer cs = new ClientServer(null);          // server already started
+	 * cs.getJavaServer().addListener(listener);          // race: started may have already fired
+	 * </pre>
+	 *
+	 * <p>To attach listeners reliably before startup, use
+	 * {@link ClientServerBuilder#preStartListener(GatewayServerListener)}, or
+	 * disable auto-start via
+	 * {@link ClientServerBuilder#autoStartJavaServer(boolean)} and call
+	 * {@link #startServer()} after attaching listeners.</p>
 	 *
 	 * @param entryPoint
 	 */
@@ -240,6 +259,7 @@ public class ClientServer {
 		private boolean autoStartJavaServer;
 		private boolean enableMemoryManagement;
 		private String authToken;
+		private final List<GatewayServerListener> preStartListeners = new ArrayList<GatewayServerListener>();
 
 		public ClientServerBuilder() {
 			this(null);
@@ -260,9 +280,28 @@ public class ClientServer {
 		}
 
 		public ClientServer build() {
-			return new ClientServer(javaPort, javaAddress, pythonPort, pythonAddress, connectTimeout, readTimeout,
-					serverSocketFactory, socketFactory, entryPoint, autoStartJavaServer, enableMemoryManagement,
-					authToken);
+			// If preStartListeners are present and autoStartJavaServer is true,
+			// we must attach the listeners BEFORE the server thread spawns.
+			// We do this by constructing with autoStartJavaServer=false,
+			// attaching the listeners, then calling startServer() ourselves.
+			boolean userWantsAutoStart = autoStartJavaServer;
+			boolean deferredStart = userWantsAutoStart && !preStartListeners.isEmpty();
+
+			ClientServer cs = new ClientServer(javaPort, javaAddress, pythonPort, pythonAddress, connectTimeout,
+					readTimeout, serverSocketFactory, socketFactory, entryPoint,
+					deferredStart ? false : autoStartJavaServer, enableMemoryManagement, authToken);
+
+			if (!preStartListeners.isEmpty()) {
+				for (GatewayServerListener listener : preStartListeners) {
+					cs.getJavaServer().addListener(listener);
+				}
+			}
+
+			if (deferredStart) {
+				cs.startServer();
+			}
+
+			return cs;
 		}
 
 		public ClientServerBuilder javaPort(int javaPort) {
@@ -312,6 +351,28 @@ public class ClientServer {
 
 		public ClientServerBuilder autoStartJavaServer(boolean autoStartJavaServer) {
 			this.autoStartJavaServer = autoStartJavaServer;
+			return this;
+		}
+
+		/**
+		 * <p>Registers a listener to be attached to the underlying Java server
+		 * <i>before</i> it is started, ensuring it observes the
+		 * {@code serverStarted} event.</p>
+		 *
+		 * <p>The default {@link ClientServer} construction starts the server
+		 * thread synchronously, so any listener attached after
+		 * {@link #build()} returns can race with — and miss — the
+		 * {@code serverStarted} event. Listeners registered through this
+		 * method are attached during {@link #build()} prior to startup.</p>
+		 *
+		 * <p>Multiple listeners may be registered by calling this method
+		 * repeatedly.</p>
+		 *
+		 * @param listener The listener to register before the server starts.
+		 * @return this builder.
+		 */
+		public ClientServerBuilder preStartListener(GatewayServerListener listener) {
+			this.preStartListeners.add(listener);
 			return this;
 		}
 

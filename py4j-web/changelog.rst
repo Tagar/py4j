@@ -4,6 +4,28 @@ Changelog
 The changelog describes in plain English the changes that occurred between Py4J
 releases.
 
+Unreleased
+----------
+
+- Java side: Fix listener-lifecycle correctness bugs in
+  ``GatewayServer`` / ``ClientServer``:
+
+  - ``GatewayServer.run()`` no longer reports the ``SocketException`` raised
+    by ``accept()`` after a normal ``shutdown()`` as ``serverError``. Listeners
+    that depended on receiving ``serverError`` for clean shutdowns will stop
+    seeing it; the canonical shutdown signals are ``serverPreShutdown`` /
+    ``serverStopped`` / ``serverPostShutdown`` (all unchanged). The previous
+    behavior was a side-effect of catching all exceptions in ``run()`` and
+    relying on a brittle, locale-dependent string match (``"socket closed"``)
+    inside ``fireServerError`` to filter the noise.
+
+  - ``ClientServer`` builder gains a new ``preStartListener(...)`` method.
+    The default ``ClientServer(Object entryPoint)`` constructor auto-starts
+    the server thread inside the constructor, which races with any listener
+    attached afterwards (the listener can miss ``serverStarted``). Use
+    ``new ClientServer.ClientServerBuilder(...).preStartListener(myListener).build()``
+    to attach a listener reliably before startup.
+
 Py4J 0.10.9.9
 -------------
 

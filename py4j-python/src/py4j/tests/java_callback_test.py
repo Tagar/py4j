@@ -245,6 +245,14 @@ class PythonEntryPointTest(unittest.TestCase):
         if auth_token:
             args = [auth_token]
         with gateway_example_app_process("pythonentrypoint", args):
+            # Wait for both Java->Python callbacks to land before
+            # shutting the gateway down. Without this, gateway.shutdown()
+            # can race the second callback on slow runners (observed on
+            # Py3.9/Java 11/macOS) and we'd see only 1 call instead of 2.
+            for _ in range(50):  # ~5 s budget
+                if len(hello_state.calls) >= 2:
+                    break
+                sleep(0.1)
             gateway.shutdown()
 
         # Check that Java correctly called Python
