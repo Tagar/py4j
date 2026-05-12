@@ -80,6 +80,28 @@ public interface Py4JJavaServer {
 	void shutdown(boolean shutdownCallbackClient);
 
 	/**
+	 * <p>
+	 * Stops accepting connections, optionally waits up to {@code gracePeriodMs}
+	 * milliseconds for in-flight requests to drain, then closes any remaining
+	 * connections and calls {@link py4j.Gateway#shutdown() Gateway.shutdown()}.
+	 * </p>
+	 *
+	 * <p>
+	 * {@code gracePeriodMs == 0} preserves the historical abrupt shutdown
+	 * behavior. A positive value gives in-flight calls and callbacks a chance
+	 * to complete before their connection is torn down.
+	 * </p>
+	 *
+	 * @param shutdownCallbackClient If True, shuts down the CallbackClient
+	 *                                  instance.
+	 * @param gracePeriodMs Maximum time in milliseconds to wait for active
+	 *                                  connections to drain. {@code 0} =
+	 *                                  abrupt (back-compat). Negative values
+	 *                                  are treated as {@code 0}.
+	 */
+	void shutdown(boolean shutdownCallbackClient, int gracePeriodMs);
+
+	/**
 	 * Shuts down the socket that matches address, remote port, and local port.
 	 */
 	void shutdownSocket(String address, int remotePort, int localPort);
