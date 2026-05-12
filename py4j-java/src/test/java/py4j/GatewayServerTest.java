@@ -154,6 +154,148 @@ public class GatewayServerTest {
 		assertTrue(listener.values.contains(new Long(10000)));
 	}
 
+	/**
+	 * Regression test: gracePeriodMs=0 (the default) preserves the historical
+	 * abrupt shutdown behavior — connections are torn down immediately.
+	 */
+	@Test
+	public void testAbruptShutdownIsBackCompat() throws Exception {
+		GatewayServer server = new GatewayServer(null, 0);
+		server.start(true);
+		Thread.sleep(100);
+
+		final int port = server.getListeningPort();
+		Socket client = new Socket("127.0.0.1", port);
+		Thread.sleep(100);
+
+		long start = System.currentTimeMillis();
+		// gracePeriodMs=0 (via the legacy shutdown(boolean) overload) —
+		// returns immediately even with an open connection.
+		server.shutdown(true);
+		long elapsed = System.currentTimeMillis() - start;
+		assertTrue("abrupt shutdown took longer than expected: " + elapsed + "ms", elapsed < 1000);
+
+		try {
+			client.close();
+		} catch (Exception ignored) {
+		}
+	}
+
+	/**
+	 * Regression test: a negative {@code gracePeriodMs} is treated as 0
+	 * (no drain), preserving back-compat with the abrupt shutdown path.
+	 */
+	@Test
+	public void testNegativeGracePeriodIsAbrupt() throws Exception {
+		GatewayServer server = new GatewayServer(null, 0);
+		server.start(true);
+		Thread.sleep(100);
+
+		final int port = server.getListeningPort();
+		Socket client = new Socket("127.0.0.1", port);
+		Thread.sleep(100);
+
+		long start = System.currentTimeMillis();
+		server.shutdown(true, -1000);
+		long elapsed = System.currentTimeMillis() - start;
+		assertTrue("negative gracePeriodMs should be treated as 0: " + elapsed + "ms", elapsed < 1000);
+
+		try {
+			client.close();
+		} catch (Exception ignored) {
+		}
+	}
+
+	/**
+	 * Regression test: when there are no active connections, a graceful
+	 * shutdown returns promptly even with a long {@code gracePeriodMs}.
+	 */
+	@Test
+	public void testGracefulShutdownNoActiveConnections() throws Exception {
+		GatewayServer server = new GatewayServer(null, 0);
+		server.start(true);
+		Thread.sleep(100);
+
+		long start = System.currentTimeMillis();
+		// 30s grace period, but no connections — should return promptly.
+		server.shutdown(true, 30000);
+		long elapsed = System.currentTimeMillis() - start;
+		assertTrue("shutdown with no connections took too long: " + elapsed + "ms", elapsed < 1000);
+	}
+
+	/**
+	 * Regression test: a connection that does NOT drain within the grace
+	 * window is force-closed at the deadline, and shutdown returns close
+	 * to the deadline (not before, not after the deadline + small slack).
+	 */
+	@Test
+	public void testGracefulShutdownForceCloseAfterDeadline() throws Exception {
+		GatewayServer server = new GatewayServer(null, 0);
+		server.start(true);
+		Thread.sleep(100);
+
+		final int port = server.getListeningPort();
+		// Open a connection that we deliberately keep alive past the deadline.
+		Socket client = new Socket("127.0.0.1", port);
+		Thread.sleep(100);
+
+		long start = System.currentTimeMillis();
+		// 500ms grace period; client never closes, so deadline must trigger
+		// force-close. Total elapsed should be ~500ms (give or take 1s slack).
+		server.shutdown(true, 500);
+		long elapsed = System.currentTimeMillis() - start;
+		assertTrue("shutdown returned before deadline: " + elapsed + "ms", elapsed >= 400);
+		assertTrue("shutdown took much longer than deadline: " + elapsed + "ms", elapsed < 2000);
+
+		try {
+			client.close();
+		} catch (Exception ignored) {
+		}
+	}
+
+	/**
+	 * Happy path: a connection that closes during the grace window allows
+	 * shutdown to return promptly rather than waiting the full deadline.
+	 * Regression test for the listener-removal race where server.run()'s
+	 * exit removed GatewayServer from its own listeners before the
+	 * connection thread's fireConnectionStopped could reach it, leaving
+	 * the drain to wait the full grace period even though connections
+	 * completed cleanup in microseconds.
+	 */
+	@Test
+	public void testGracefulShutdownReturnsWhenWorkCompletes() throws Exception {
+		GatewayServer server = new GatewayServer(null, 0);
+		server.start(true);
+		Thread.sleep(100);
+
+		final int port = server.getListeningPort();
+		final Socket client = new Socket("127.0.0.1", port);
+		Thread.sleep(100);
+
+		// Close the client mid-drain, 200ms into the grace window.
+		Thread closer = new Thread(new Runnable() {
+			@Override
+			public void run() {
+				try {
+					Thread.sleep(200);
+					client.close();
+				} catch (Exception ignored) {
+				}
+			}
+		});
+		closer.start();
+
+		long start = System.currentTimeMillis();
+		// 5000ms grace period; closer fires at t+200ms; drain should detect
+		// the connection leaving the list and return promptly.
+		server.shutdown(true, 5000);
+		long elapsed = System.currentTimeMillis() - start;
+		closer.join(1000);
+
+		assertTrue("graceful drain returned before closer fired: " + elapsed + "ms", elapsed >= 150);
+		assertTrue("graceful drain did not return promptly after connection closed: " + elapsed + "ms", elapsed < 2000);
+	}
+
 	@Test
 	public void testEphemeralPort() {
 		GatewayServer server = new GatewayServer(null, 0);
