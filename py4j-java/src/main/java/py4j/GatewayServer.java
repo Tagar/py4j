@@ -487,8 +487,8 @@ public class GatewayServer extends DefaultGatewayServerListener implements Py4JJ
 		try {
 			lock.lock();
 			long t1 = System.currentTimeMillis();
-			System.out.println("DEBUG-CS got-lock t=" + t1 + " tid=" + tid + " wait=" + (t1 - t0) + " sz="
-					+ connections.size());
+			System.out.println(
+					"DEBUG-CS got-lock t=" + t1 + " tid=" + tid + " wait=" + (t1 - t0) + " sz=" + connections.size());
 			// Always remove from the connections list, even during shutdown.
 			// The previous "skip-if-isShutdown" optimization avoided redundant
 			// work because abrupt shutdown's force-close iteration would clear
@@ -823,8 +823,8 @@ public class GatewayServer extends DefaultGatewayServerListener implements Py4JJ
 			// scheduled the waiter.
 			if (gracePeriodMs > 0) {
 				long tid = Thread.currentThread().getId();
-				System.out.println("DEBUG-DR enter t=" + System.currentTimeMillis() + " tid=" + tid + " sz="
-						+ connections.size());
+				System.out.println(
+						"DEBUG-DR enter t=" + System.currentTimeMillis() + " tid=" + tid + " sz=" + connections.size());
 				long remainingNanos = TimeUnit.MILLISECONDS.toNanos(gracePeriodMs);
 				while (!connections.isEmpty() && remainingNanos > 0) {
 					System.out.println("DEBUG-DR await t=" + System.currentTimeMillis() + " ns=" + remainingNanos);
@@ -834,8 +834,8 @@ public class GatewayServer extends DefaultGatewayServerListener implements Py4JJ
 						Thread.currentThread().interrupt();
 						break;
 					}
-					System.out.println("DEBUG-DR woke t=" + System.currentTimeMillis() + " ns=" + remainingNanos + " sz="
-							+ connections.size());
+					System.out.println("DEBUG-DR woke t=" + System.currentTimeMillis() + " ns=" + remainingNanos
+							+ " sz=" + connections.size());
 				}
 				System.out.println("DEBUG-DR exit t=" + System.currentTimeMillis() + " size=" + connections.size());
 			}
