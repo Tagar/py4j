@@ -481,8 +481,14 @@ public class GatewayServer extends DefaultGatewayServerListener implements Py4JJ
 	}
 
 	public void connectionStopped(Py4JServerConnection gatewayConnection) {
+		long t0 = System.currentTimeMillis();
+		long tid = Thread.currentThread().getId();
+		System.out.println("DEBUG-CS enter t=" + t0 + " tid=" + tid);
 		try {
 			lock.lock();
+			long t1 = System.currentTimeMillis();
+			System.out.println("DEBUG-CS got-lock t=" + t1 + " tid=" + tid + " wait=" + (t1 - t0) + " sz="
+					+ connections.size());
 			// Always remove from the connections list, even during shutdown.
 			// The previous "skip-if-isShutdown" optimization avoided redundant
 			// work because abrupt shutdown's force-close iteration would clear
@@ -494,12 +500,15 @@ public class GatewayServer extends DefaultGatewayServerListener implements Py4JJ
 			// equivalent to the old behavior in the abrupt path (the
 			// subsequent connections.clear() becomes redundant rather than
 			// load-bearing) and makes graceful drain work.
-			connections.remove(gatewayConnection);
+			boolean rm = connections.remove(gatewayConnection);
+			System.out.println("DEBUG-CS remove rm=" + rm + " size=" + connections.size() + " tid=" + tid);
 			if (connections.isEmpty()) {
+				System.out.println("DEBUG-CS signalAll tid=" + tid);
 				connectionsEmpty.signalAll();
 			}
 		} finally {
 			lock.unlock();
+			System.out.println("DEBUG-CS exit t=" + System.currentTimeMillis() + " tid=" + tid);
 		}
 
 	}
@@ -813,15 +822,22 @@ public class GatewayServer extends DefaultGatewayServerListener implements Py4JJ
 			// sleeps, because the drain thread re-acquired before the OS
 			// scheduled the waiter.
 			if (gracePeriodMs > 0) {
+				long tid = Thread.currentThread().getId();
+				System.out.println("DEBUG-DR enter t=" + System.currentTimeMillis() + " tid=" + tid + " sz="
+						+ connections.size());
 				long remainingNanos = TimeUnit.MILLISECONDS.toNanos(gracePeriodMs);
 				while (!connections.isEmpty() && remainingNanos > 0) {
+					System.out.println("DEBUG-DR await t=" + System.currentTimeMillis() + " ns=" + remainingNanos);
 					try {
 						remainingNanos = connectionsEmpty.awaitNanos(remainingNanos);
 					} catch (InterruptedException ie) {
 						Thread.currentThread().interrupt();
 						break;
 					}
+					System.out.println("DEBUG-DR woke t=" + System.currentTimeMillis() + " ns=" + remainingNanos + " sz="
+							+ connections.size());
 				}
+				System.out.println("DEBUG-DR exit t=" + System.currentTimeMillis() + " size=" + connections.size());
 			}
 
 			ArrayList<Py4JServerConnection> tempConnections = new ArrayList<Py4JServerConnection>(connections);
