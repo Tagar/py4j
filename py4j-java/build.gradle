@@ -145,6 +145,17 @@ jacocoTestReport {
     }
 }
 
+// [SANDBOX/DEBUG] verbose test output so CI surfaces assertion messages + stdout
+test {
+    testLogging {
+        events 'failed'
+        exceptionFormat 'full'
+        showStandardStreams = true
+        showCauses = true
+        showStackTraces = true
+    }
+}
+
 // ====== CUSTOM TASKS ====== //
 
 // Maven support
