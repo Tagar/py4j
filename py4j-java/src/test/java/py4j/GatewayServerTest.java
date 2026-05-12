@@ -316,7 +316,11 @@ public class GatewayServerTest {
 		System.out.println("DEBUG: shutdown returned in " + elapsed + "ms, closer fired at t+" + closeDelta + "ms");
 
 		closer.join(1000);
+		// Same assertions as the original failing test.
 		assertTrue("closer didn't fire: closerFiredAt=" + closerFiredAt[0], closerFiredAt[0] > 0);
+		assertTrue("graceful drain returned too early: " + elapsed + "ms (expected >= 150)", elapsed >= 150);
+		assertTrue("graceful drain did not return early; waited near deadline: " + elapsed + "ms (closer fired at t+"
+				+ closeDelta + "ms)", elapsed < 2000);
 	}
 
 	@Test
