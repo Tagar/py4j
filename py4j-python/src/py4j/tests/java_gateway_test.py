@@ -85,7 +85,6 @@ def start_echo_server():
 
 
 def start_echo_server_process():
-    # XXX DO NOT FORGET TO KILL THE PROCESS IF THE TEST DOES NOT SUCCEED
     sleep()
     p = Process(target=start_echo_server)
     p.start()
@@ -121,20 +120,23 @@ def start_ipv6_example_server():
 
 
 def start_example_app_process():
-    # XXX DO NOT FORGET TO KILL THE PROCESS IF THE TEST DOES NOT SUCCEED
     p = Process(target=start_example_server)
     p.start()
     sleep()
-    check_connection()
+    # Verify the JVM actually accepted connections; if not, terminate
+    # the orphan process so it doesn't hold the default port for the
+    # next test. Previously we called check_connection() (which
+    # silently retries and returns) so a dead JVM looked alive and
+    # downstream tests failed with cryptic port conflicts.
+    verify_jvm_or_terminate(p)
     return p
 
 
 def start_short_timeout_app_process():
-    # XXX DO NOT FORGET TO KILL THE PROCESS IF THE TEST DOES NOT SUCCEED
     p = Process(target=start_short_timeout_example_server)
     p.start()
     sleep()
-    check_connection()
+    verify_jvm_or_terminate(p)
     return p
 
 
@@ -178,6 +180,90 @@ def safe_shutdown(instance):
             print_exc()
 
 
+def safe_terminate_process(p, timeout=5):
+    """Best-effort process kill: terminate, then kill if it doesn't exit.
+
+    Used by start-and-verify helpers when the spawned JVM never came up
+    (so we don't leak an orphan process holding the default port for
+    later tests in the same CI cell).
+    """
+    if p is None:
+        return
+    try:
+        if p.is_alive():
+            p.terminate()
+            p.join(timeout=timeout)
+        if p.is_alive():
+            try:
+                p.kill()
+                p.join(timeout=2)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def safe_join(p, timeout=10):
+    """Bounded process join with terminate fallback.
+
+    Replaces unbounded p.join() in test context managers. The previous
+    pattern would hang the entire CI cell for the full 20-minute job
+    timeout if a JVM didn't shut down cleanly, which then cascaded into
+    port-conflict failures on every subsequent test in the file.
+    """
+    if p is None:
+        return
+    try:
+        p.join(timeout=timeout)
+    except Exception:
+        pass
+    if p.is_alive():
+        safe_terminate_process(p)
+
+
+def verify_jvm_or_terminate(
+        p, gateway_parameters=None, max_retries=4, retry_delay=2):
+    """Verify the spawned JVM is actually accepting connections; if it
+    isn't, terminate the spawned process and raise.
+
+    The lower-level ``check_connection`` swallows ``Py4JNetworkError``
+    (sleeps 2 s and returns) so it can absorb transient races. That's
+    fine when the JVM eventually does come up; it's harmful when the
+    JVM is genuinely dead, because the start helper then returns a
+    "started" process that nothing can connect to and the test fails
+    with a cryptic Py4JError downstream while leaking the orphan
+    process onto the default port. This wrapper catches that case and
+    cleans up.
+
+    Default budget: initial probe + 4 retries x 2 s = up to ~8 s for
+    the JVM to come up, which covers slow Windows CI runners where
+    JVM cold-start under heavy CPU load can exceed 5 s.
+    """
+    test_gateway = JavaGateway(gateway_parameters=gateway_parameters)
+    last_error = None
+    try:
+        for attempt in range(max_retries + 1):
+            try:
+                test_gateway.jvm.System.currentTimeMillis()
+                return
+            except Py4JNetworkError as e:
+                last_error = e
+                if attempt < max_retries:
+                    sleep(retry_delay)
+        safe_terminate_process(p)
+        raise Py4JNetworkError(
+            "JVM subprocess did not accept connections after "
+            "{} retries (~{}s total); orphan process terminated to "
+            "free port for subsequent tests".format(
+                max_retries, max_retries * retry_delay)
+        ) from last_error
+    finally:
+        try:
+            test_gateway.close()
+        except Exception:
+            pass
+
+
 @contextmanager
 def gateway(*args, **kwargs):
     g = JavaGateway(
@@ -198,7 +284,7 @@ def example_app_process():
     try:
         yield p
     finally:
-        p.join()
+        safe_join(p)
 
 
 class TestConnection(object):
