@@ -323,6 +323,102 @@ public class GatewayServerTest {
 				+ closeDelta + "ms)", elapsed < 2000);
 	}
 
+	/**
+	 * DEBUG: same as above, but with a custom GatewayServerListener whose
+	 * connectionStopped uses System.out.println — bypasses JUL filtering — so
+	 * we can see whether the connection thread reaches fireConnectionStopped
+	 * at all (or is stuck somewhere before it).
+	 */
+	@Test
+	public void debugGracefulDrainWithListener() throws Exception {
+		final long[] startedAt = new long[1];
+		final long[] stoppedAt = new long[1];
+		final long[] errorAt = new long[1];
+		final GatewayServer server = new GatewayServer(null, 0);
+		server.addListener(new GatewayServerListener() {
+			@Override
+			public void connectionStarted(Py4JServerConnection c) {
+				startedAt[0] = System.currentTimeMillis();
+				System.out.println("DEBUG-LSN: connectionStarted @ " + startedAt[0]);
+			}
+
+			@Override
+			public void connectionStopped(Py4JServerConnection c) {
+				stoppedAt[0] = System.currentTimeMillis();
+				System.out.println("DEBUG-LSN: connectionStopped @ " + stoppedAt[0]);
+			}
+
+			@Override
+			public void connectionError(Exception e) {
+				errorAt[0] = System.currentTimeMillis();
+				System.out.println("DEBUG-LSN: connectionError @ " + errorAt[0] + ": " + e);
+			}
+
+			@Override
+			public void serverStarted() {
+			}
+
+			@Override
+			public void serverStopped() {
+			}
+
+			@Override
+			public void serverError(Exception e) {
+				System.out.println("DEBUG-LSN: serverError: " + e);
+			}
+
+			@Override
+			public void serverPreShutdown() {
+				System.out.println("DEBUG-LSN: serverPreShutdown @ " + System.currentTimeMillis());
+			}
+
+			@Override
+			public void serverPostShutdown() {
+				System.out.println("DEBUG-LSN: serverPostShutdown @ " + System.currentTimeMillis());
+			}
+		});
+		server.start(true);
+		Thread.sleep(100);
+
+		final int port = server.getListeningPort();
+		final Socket client = new Socket("127.0.0.1", port);
+		Thread.sleep(100);
+
+		final long[] closerFiredAt = new long[1];
+		Thread closer = new Thread(new Runnable() {
+			@Override
+			public void run() {
+				try {
+					Thread.sleep(200);
+					closerFiredAt[0] = System.currentTimeMillis();
+					System.out.println("DEBUG: closer firing client.close() @ " + closerFiredAt[0]);
+					client.close();
+					System.out.println("DEBUG: closer: client.close() returned @ " + System.currentTimeMillis());
+				} catch (Exception e) {
+					System.out.println("DEBUG: closer exception: " + e);
+				}
+			}
+		});
+		closer.start();
+
+		long start = System.currentTimeMillis();
+		System.out.println("DEBUG: calling shutdown(true, 5000) @ " + start);
+		server.shutdown(true, 5000);
+		long elapsed = System.currentTimeMillis() - start;
+		long closeDelta = closerFiredAt[0] - start;
+		long stoppedDelta = stoppedAt[0] > 0 ? stoppedAt[0] - start : -1;
+		System.out.println("DEBUG: shutdown returned in " + elapsed + "ms");
+		System.out.println("DEBUG-SUMMARY: closer fired at t+" + closeDelta + "ms, stopped fired at t+" + stoppedDelta
+				+ "ms (negative means never), startedAt=" + startedAt[0] + ", errorAt=" + errorAt[0]);
+
+		closer.join(1000);
+		assertTrue("connectionStarted never fired (connection was never registered)", startedAt[0] > 0);
+		assertTrue("connectionStopped did not fire within 5s of shutdown: elapsed=" + elapsed + "ms stoppedAt="
+				+ stoppedAt[0] + " (closer fired at t+" + closeDelta + "ms)", stoppedAt[0] > 0);
+		assertTrue("graceful drain did not return early: " + elapsed + "ms (closer fired at t+" + closeDelta
+				+ "ms, stopped fired at t+" + stoppedDelta + "ms)", elapsed < 2000);
+	}
+
 	@Test
 	public void testEphemeralPort() {
 		GatewayServer server = new GatewayServer(null, 0);
