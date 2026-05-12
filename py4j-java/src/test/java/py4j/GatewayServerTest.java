@@ -253,6 +253,72 @@ public class GatewayServerTest {
 		}
 	}
 
+	/**
+	 * DEBUG: graceful drain when the connection is closed BEFORE shutdown.
+	 * Eliminates closer-thread timing complexity from the failing variant.
+	 */
+	@Test
+	public void debugGracefulDrainWhenClientPreClosed() throws Exception {
+		GatewayServer server = new GatewayServer(null, 0);
+		server.start(true);
+		Thread.sleep(100);
+
+		final int port = server.getListeningPort();
+		Socket client = new Socket("127.0.0.1", port);
+		Thread.sleep(100);
+		System.out.println("DEBUG: closing client BEFORE shutdown");
+		client.close();
+		Thread.sleep(500); // Give server's connectionStopped time to fire
+
+		long start = System.currentTimeMillis();
+		System.out.println("DEBUG: calling shutdown(true, 5000) - connections should already be drained");
+		server.shutdown(true, 5000);
+		long elapsed = System.currentTimeMillis() - start;
+		System.out.println("DEBUG: shutdown returned in " + elapsed + "ms");
+
+		assertTrue("pre-closed drain took too long: " + elapsed + "ms", elapsed < 500);
+	}
+
+	/**
+	 * DEBUG: graceful drain with closer thread (the failing variant) + logging.
+	 */
+	@Test
+	public void debugGracefulDrainWithCloserThread() throws Exception {
+		GatewayServer server = new GatewayServer(null, 0);
+		server.start(true);
+		Thread.sleep(100);
+
+		final int port = server.getListeningPort();
+		final Socket client = new Socket("127.0.0.1", port);
+		Thread.sleep(100);
+
+		final long[] closerFiredAt = new long[1];
+		Thread closer = new Thread(new Runnable() {
+			@Override
+			public void run() {
+				try {
+					Thread.sleep(200);
+					closerFiredAt[0] = System.currentTimeMillis();
+					System.out.println("DEBUG: closer firing client.close()");
+					client.close();
+				} catch (Exception e) {
+					System.out.println("DEBUG: closer exception: " + e);
+				}
+			}
+		});
+		closer.start();
+
+		long start = System.currentTimeMillis();
+		System.out.println("DEBUG: calling shutdown(true, 5000)");
+		server.shutdown(true, 5000);
+		long elapsed = System.currentTimeMillis() - start;
+		long closeDelta = closerFiredAt[0] - start;
+		System.out.println("DEBUG: shutdown returned in " + elapsed + "ms, closer fired at t+" + closeDelta + "ms");
+
+		closer.join(1000);
+		assertTrue("closer didn't fire: closerFiredAt=" + closerFiredAt[0], closerFiredAt[0] > 0);
+	}
+
 	@Test
 	public void testEphemeralPort() {
 		GatewayServer server = new GatewayServer(null, 0);
