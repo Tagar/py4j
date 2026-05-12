@@ -43,6 +43,8 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.CopyOnWriteArrayList;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Condition;
 import java.util.concurrent.locks.Lock;
 import java.util.concurrent.locks.ReentrantLock;
 import java.util.logging.Level;
@@ -164,6 +166,8 @@ public class GatewayServer extends DefaultGatewayServerListener implements Py4JJ
 	private boolean isShuttingDown = false;
 
 	private final Lock lock = new ReentrantLock(true);
+
+	private final Condition connectionsEmpty = lock.newCondition();
 
 	static {
 		GatewayServer.turnLoggingOff();
@@ -484,13 +488,16 @@ public class GatewayServer extends DefaultGatewayServerListener implements Py4JJ
 			// work because abrupt shutdown's force-close iteration would clear
 			// the list anyway. With graceful shutdown drain
 			// (shutdown(boolean, int) with gracePeriodMs > 0), the drain loop
-			// polls connections.size() to detect when in-flight requests
+			// awaits connectionsEmpty to detect when in-flight requests
 			// finish; if connectionStopped doesn't decrement during shutdown
-			// the drain loop spins until the deadline. Always-remove is
+			// the drain loop sleeps until the deadline. Always-remove is
 			// equivalent to the old behavior in the abrupt path (the
 			// subsequent connections.clear() becomes redundant rather than
 			// load-bearing) and makes graceful drain work.
 			connections.remove(gatewayConnection);
+			if (connections.isEmpty()) {
+				connectionsEmpty.signalAll();
+			}
 		} finally {
 			lock.unlock();
 		}
@@ -797,20 +804,23 @@ public class GatewayServer extends DefaultGatewayServerListener implements Py4JJ
 
 			// Graceful drain: wait up to gracePeriodMs for in-flight requests
 			// to finish so callbacks/calls don't get terminated mid-execution.
-			// Releases the lock during the sleep so connections can complete
-			// (their cleanup paths take the same lock).
+			// Uses Condition.awaitNanos which atomically releases the lock
+			// while waiting and re-acquires before returning — connectionStopped
+			// signals the condition when the connections list becomes empty.
+			// The previous unlock/sleep/lock polling pattern was unreliable:
+			// connectionStopped callers could be lock-starved for the full
+			// grace period even though the lock was nominally free during
+			// sleeps, because the drain thread re-acquired before the OS
+			// scheduled the waiter.
 			if (gracePeriodMs > 0) {
-				long deadline = System.currentTimeMillis() + gracePeriodMs;
-				while (!connections.isEmpty() && System.currentTimeMillis() < deadline) {
-					lock.unlock();
+				long remainingNanos = TimeUnit.MILLISECONDS.toNanos(gracePeriodMs);
+				while (!connections.isEmpty() && remainingNanos > 0) {
 					try {
-						Thread.sleep(20);
+						remainingNanos = connectionsEmpty.awaitNanos(remainingNanos);
 					} catch (InterruptedException ie) {
 						Thread.currentThread().interrupt();
-						lock.lock();
 						break;
 					}
-					lock.lock();
 				}
 			}
 
