@@ -258,17 +258,10 @@ public class GatewayConnection implements Runnable, Py4JServerConnection {
 			logger.log(Level.WARNING, "Error occurred while waiting for a command.", e);
 			error = e;
 		} finally {
-			long tid = Thread.currentThread().getId();
-			System.out.println("DEBUG-GC finally enter t=" + System.currentTimeMillis() + " tid=" + tid + " err="
-					+ (error != null) + " exec=" + executing + " reset=" + reset);
 			if (error != null && executing && writer != null) {
-				System.out.println("DEBUG-GC qSFE-pre t=" + System.currentTimeMillis() + " tid=" + tid);
 				quietSendFatalError(writer, error);
-				System.out.println("DEBUG-GC qSFE-post t=" + System.currentTimeMillis() + " tid=" + tid);
 			}
-			System.out.println("DEBUG-GC shutdown-pre t=" + System.currentTimeMillis() + " tid=" + tid);
 			shutdown(reset);
-			System.out.println("DEBUG-GC shutdown-post t=" + System.currentTimeMillis() + " tid=" + tid);
 		}
 	}
 
@@ -289,22 +282,13 @@ public class GatewayConnection implements Runnable, Py4JServerConnection {
 	 */
 	@Override
 	public void shutdown(boolean reset) {
-		long tid = Thread.currentThread().getId();
-		System.out.println("DEBUG-GS enter t=" + System.currentTimeMillis() + " tid=" + tid + " reset=" + reset);
 		if (reset) {
-			System.out.println("DEBUG-GS setLinger-pre t=" + System.currentTimeMillis() + " tid=" + tid);
 			NetworkUtil.quietlySetLinger(socket);
-			System.out.println("DEBUG-GS setLinger-post t=" + System.currentTimeMillis() + " tid=" + tid);
 		}
-		System.out.println("DEBUG-GS sock-close-pre t=" + System.currentTimeMillis() + " tid=" + tid);
 		// XXX Close socket first, otherwise, reader.close() will block if stuck on readLine.
 		NetworkUtil.quietlyClose(socket);
-		System.out.println("DEBUG-GS sock-close-post t=" + System.currentTimeMillis() + " tid=" + tid);
 		NetworkUtil.quietlyClose(reader);
-		System.out.println("DEBUG-GS rdr-close-post t=" + System.currentTimeMillis() + " tid=" + tid);
 		NetworkUtil.quietlyClose(writer);
-		System.out.println("DEBUG-GS wtr-close-post t=" + System.currentTimeMillis() + " tid=" + tid);
 		fireConnectionStopped();
-		System.out.println("DEBUG-GS fcs-post t=" + System.currentTimeMillis() + " tid=" + tid);
 	}
 }
