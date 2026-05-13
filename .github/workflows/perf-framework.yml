@@ -17,23 +17,24 @@ on:
     branches:
     - master
     paths:
+    # Include perf-framework code, excluding doc-only changes within it
+    # (GitHub Actions rejects `paths` + `paths-ignore` together in the
+    # same trigger; the `!` negation prefix inside a single `paths:` list
+    # is the supported way to combine include + exclude).
     - 'py4j-python/src/py4j/tests/perf/**'
+    - '!py4j-python/src/py4j/tests/perf/**/*.md'
     - 'py4j-python/src/py4j/tests/test_perf_framework.py'
     - 'py4j-python/requirements-test.txt'
     - '.github/workflows/perf-framework.yml'
-    paths-ignore:
-    # Doc-only changes never affect framework behavior; skip the run.
-    - '**/*.md'
   pull_request:
     branches:
     - master
     paths:
     - 'py4j-python/src/py4j/tests/perf/**'
+    - '!py4j-python/src/py4j/tests/perf/**/*.md'
     - 'py4j-python/src/py4j/tests/test_perf_framework.py'
     - 'py4j-python/requirements-test.txt'
     - '.github/workflows/perf-framework.yml'
-    paths-ignore:
-    - '**/*.md'
   # Manual trigger from the Actions UI — useful when you want to
   # re-run perf coverage after merging upstream master or to test the
   # workflow itself.
