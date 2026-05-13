@@ -1,2 +1,8 @@
 .DS_Store
 /build
+
+# Local-only workspace for AI-assisted design iteration (e.g. the
+# 'superpowers' plugin's brainstorming skill writes specs here by
+# default). Kept out of tree; committed design docs live under the
+# perf framework at py4j-python/src/py4j/tests/perf/docs/.
+docs/superpowers/

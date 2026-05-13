@@ -1,0 +1,105 @@
+name: perf-framework
+
+# Run the perf-framework self-tests once on Linux + latest Python +
+# latest LTS Java. The framework itself is local-only (it spawns its
+# own JVMs), so running its self-tests on the full Python x Java x OS
+# matrix (56 cells) gives no additional coverage — the tests are pure
+# Python and the JVM-spawning path is the same on every cell. One
+# representative cell suffices.
+#
+# Triggers:
+#   - any change under py4j-python/src/py4j/tests/perf/
+#   - any change to test_perf_framework.py
+#   - any change to requirements-test.txt (deps the framework needs)
+#   - any change to this workflow file
+on:
+  push:
+    branches:
+    - master
+    paths:
+    - 'py4j-python/src/py4j/tests/perf/**'
+    - 'py4j-python/src/py4j/tests/test_perf_framework.py'
+    - 'py4j-python/requirements-test.txt'
+    - '.github/workflows/perf-framework.yml'
+    paths-ignore:
+    # Doc-only changes never affect framework behavior; skip the run.
+    - '**/*.md'
+  pull_request:
+    branches:
+    - master
+    paths:
+    - 'py4j-python/src/py4j/tests/perf/**'
+    - 'py4j-python/src/py4j/tests/test_perf_framework.py'
+    - 'py4j-python/requirements-test.txt'
+    - '.github/workflows/perf-framework.yml'
+    paths-ignore:
+    - '**/*.md'
+  # Manual trigger from the Actions UI — useful when you want to
+  # re-run perf coverage after merging upstream master or to test the
+  # workflow itself.
+  workflow_dispatch:
+
+jobs:
+  perf-framework-tests:
+    name: Perf framework self-tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Java 8 JDK for build
+        # py4j-java targets source/target 1.6 so it has to compile with
+        # Java 8 specifically — newer JDKs reject Source option 6.
+        uses: actions/setup-java@v5
+        with:
+          java-version: '8'
+          distribution: 'zulu'
+          cache: 'gradle'
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install Python deps
+        run: |
+          cd py4j-python
+          # -e . is required so `python -m py4j.tests.perf` (the
+          # smoke-run step below) can find the module. Just installing
+          # requirements-test.txt isn't enough — py4j itself has to be
+          # on the path. pytest finds the source automatically via
+          # pyproject/conftest discovery, but python -m does not.
+          pip install -e .
+          pip install -r requirements-test.txt
+
+      - name: Build py4j-java classes (needed for JVM-spawn tests)
+        run: |
+          cd py4j-java
+          ./gradlew classes testClasses
+
+      - name: Setup Java 17 JDK for the perf-framework runtime
+        # The framework spawns JVMs at runtime; latest LTS is fine
+        # (py4j supports 8+). Java 8 stays available for any back-
+        # compat smoke later.
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'zulu'
+
+      - name: Run perf-framework self-tests
+        run: |
+          cd py4j-python
+          pytest src/py4j/tests/test_perf_framework.py -vvv
+
+      - name: Smoke-run the framework end-to-end (single scenario, --quick)
+        run: |
+          cd py4j-python
+          # Sanity: the framework can spawn a JVM, run a micro
+          # scenario, and emit a report without crashing. Doesn't
+          # gate on measurement quality (CI noise makes that
+          # meaningless); just verifies the orchestration works.
+          python -m py4j.tests.perf --quick --only M1 --no-renice \
+            --output-dir /tmp/perf-smoke || exit 1
+          test -f /tmp/perf-smoke/perf_report.json
+          test -f /tmp/perf-smoke/perf_report.md
+          echo "Smoke run OK"

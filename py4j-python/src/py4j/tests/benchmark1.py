@@ -1,3 +1,15 @@
+"""
+DEPRECATED. This script is kept for historical reference.
+
+For reproducible before/after performance measurements, prefer:
+
+    python -m py4j.tests.perf              # full run
+    python -m py4j.tests.perf --save baseline.json
+    python -m py4j.tests.perf --compare baseline.json
+
+See ``py4j/tests/perf/README.md`` for the full framework.
+"""
+
 from functools import partial
 import gc
 import time
