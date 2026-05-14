@@ -92,15 +92,31 @@ jobs:
           cd py4j-python
           pytest src/py4j/tests/test_perf_framework.py -vvv
 
-      - name: Smoke-run the framework end-to-end (single scenario, --quick)
+      - name: Smoke-run the framework end-to-end (representative subset, --quick)
         run: |
           cd py4j-python
-          # Sanity: the framework can spawn a JVM, run a micro
-          # scenario, and emit a report without crashing. Doesn't
-          # gate on measurement quality (CI noise makes that
+          # Sanity: the framework can spawn a JVM, run scenarios across
+          # the major code paths (per-call latency, protocol encode,
+          # concurrent calls, JavaList iteration, Java→Python callback),
+          # and emit a report without crashing. Doesn't gate on
+          # measurement quality (CI noise makes absolute numbers
           # meaningless); just verifies the orchestration works.
-          python -m py4j.tests.perf --quick --only M1 --no-renice \
-            --output-dir /tmp/perf-smoke || exit 1
+          python -m py4j.tests.perf --quick \
+            --only M1,M5a,X1-1,X2-10k,X4 \
+            --no-renice --output-dir /tmp/perf-smoke || exit 1
           test -f /tmp/perf-smoke/perf_report.json
           test -f /tmp/perf-smoke/perf_report.md
           echo "Smoke run OK"
+
+      - name: Upload smoke-run reports as artifacts
+        # Keep the smoke JSON + markdown reachable from the Actions UI
+        # for 30 days, so anyone can review what the framework produced
+        # on a given run. Useful for debugging schema regressions or for
+        # spot-checking that the report format renders properly.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: /tmp/perf-smoke/
+          retention-days: 30
+          if-no-files-found: warn
