@@ -1,0 +1,90 @@
+name: codspeed
+
+# Continuous performance benchmarks via CodSpeed (https://codspeed.io).
+# Runs the framework's micro scenarios (M1-M7) and four representative
+# macro scenarios (X1-1, X2-10k, X4, X6) on CodSpeed's bare-metal Macro
+# Runners. The Macro Runners give <1 % variance walltime measurements —
+# substantially more stable than shared GitHub Actions runners, which is
+# what makes per-PR perf-regression gating meaningful here.
+#
+# Free for OSS up to 600 macro-runner minutes/month; one run of the
+# benchmark set takes roughly 5-6 minutes.
+#
+# Triggers (intentionally minimal):
+#   - push to master: track per-commit perf trend on the dashboard
+#   - workflow_dispatch: manual trigger for PR-time perf verification
+#     (no PR auto-trigger; maintainers dispatch when a change claims a
+#     perf impact, keeping CI cost low on routine PRs)
+#
+# Path filter limits master-push triggers to commits that could plausibly
+# affect performance (py4j Python sources, py4j-java sources, the test
+# requirements file, and this workflow itself). Doc-only commits don't
+# burn macro-runner budget.
+#
+# Prerequisite (not in this PR): install the CodSpeed GitHub App on the
+# py4j organization:
+#   https://github.com/apps/codspeed
+# Until installed, this workflow runs the benchmarks but cannot post
+# results to the dashboard (and ``codspeed-macro`` won't resolve to a
+# runner). Maintainer action; one-time setup.
+
+on:
+  push:
+    branches:
+    - master
+    paths:
+    - 'py4j-python/src/py4j/**/*.py'
+    - 'py4j-java/src/main/**'
+    - 'py4j-python/requirements-test.txt'
+    - '.github/workflows/codspeed.yml'
+  workflow_dispatch:
+
+jobs:
+  codspeed:
+    name: CodSpeed walltime benchmarks
+    runs-on: codspeed-macro
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Setup Java 8 JDK for py4j-java build
+        # py4j-java targets source/target 1.6 so it has to compile with
+        # Java 8 specifically — newer JDKs reject Source option 6.
+        uses: actions/setup-java@v5
+        with:
+          java-version: '8'
+          distribution: 'zulu'
+          cache: 'gradle'
+
+      - name: Setup Python 3.13
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Install py4j + perf deps
+        run: |
+          cd py4j-python
+          pip install -e .
+          pip install -r requirements-test.txt
+
+      - name: Build py4j-java classes
+        run: |
+          cd py4j-java
+          ./gradlew classes testClasses
+
+      - name: Setup Java 17 JDK for the perf-framework runtime
+        uses: actions/setup-java@v5
+        with:
+          java-version: '17'
+          distribution: 'zulu'
+
+      - name: Run CodSpeed benchmarks (micro + macro)
+        uses: CodSpeedHQ/action@v3
+        with:
+          token: ${{ secrets.CODSPEED_TOKEN }}
+          run: |
+            cd py4j-python
+            pytest \
+              src/py4j/tests/perf/scenarios/micro.py \
+              src/py4j/tests/perf/scenarios/codspeed_macros.py \
+              --codspeed
